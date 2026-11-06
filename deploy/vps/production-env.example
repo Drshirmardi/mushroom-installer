@@ -1,0 +1,61 @@
+# Real production: /home/mushroom-prod/mushroom/production/runtime.env.
+# This file contains public/runtime settings only. Keep secret values in ./secrets/.
+
+MUSHROOM_ENVIRONMENT=production
+COMPOSE_PROJECT_NAME=mushroom-production
+MUSHROOM_ENV_ROOT=/home/mushroom-prod/mushroom/production
+
+
+PUBLIC_API_URL=https://api.example.com
+PUBLIC_WEB_URL=https://example.com
+PUBLIC_APP_URL=https://app.example.com
+PUBLIC_DASHBOARD_URL=https://dashboard.example.com
+APP_ORIGINS=https://example.com,https://app.example.com,https://dashboard.example.com
+TRUSTED_PROXIES=127.0.0.1/32
+LOG_LEVEL=info
+# Production remains disabled; never use the Development stream here.
+PUBLIC_GA4_MEASUREMENT_ID=
+PUBLIC_ANALYTICS_CONSENT=denied
+PUBLIC_ANALYTICS_DEBUG=false
+ANALYTICS_SERVER_ENABLED=false
+JWT_ACCESS_ISSUER=sabz-zendegi-api
+JWT_ACCESS_AUDIENCE=sabz-zendegi-frontends
+COMMERCE_RESERVATION_TTL_MINUTES=20
+PAYMENT_CREDENTIAL_ENCRYPTION_KEY_VERSION=v1
+SMS_CREDENTIAL_ENCRYPTION_KEY_VERSION=v1
+SMS_TRANSPORT_MODE=disabled
+SMS_REQUEST_TIMEOUT_MS=5000
+SADAD_TRANSPORT_MODE=disabled
+SADAD_REQUEST_TIMEOUT_MS=5000
+# SADAD_RETURN_URL may use the registered merchant main domain; proxy its exact callback path to this environment API.
+SADAD_RETURN_URL=https://api.example.com/v1/payments/providers/sadad/callback
+SADAD_RESULT_URL=https://app.example.com/store/order-success
+# Set exactly the redirect shape confirmed for this merchant: PDF_PURCHASE, PHP_VPG_PURCHASE or DOTNET_PURCHASE_INDEX.
+SADAD_REDIRECT_PROFILE=
+
+# Bind application ports to loopback; expose only the reverse proxy on 80/443.
+API_PORT=127.0.0.1:3003
+WEB_PORT=127.0.0.1:3000
+APP_PORT=127.0.0.1:3001
+DASHBOARD_PORT=127.0.0.1:3002
+
+# Secret values are intentionally not placed in runtime.env. Create the eight API file-backed
+# secrets documented in docs/ENVIRONMENT.md under <MUSHROOM_ENV_ROOT>/secrets/.
+
+# Application runtime options (credentials stay in secrets/).
+BILLING_BOOKING_HOLD_MINUTES=10
+# Select exactly one: disabled | r2 (Cloudflare) | arvancloud. Production stays disabled.
+PRODUCT_MEDIA_STORAGE_MODE=disabled
+R2_ENDPOINT=
+R2_BUCKET=
+R2_REGION=auto
+R2_REQUEST_TIMEOUT_MS=5000
+# Arvan profile: endpoint must match the bucket region; secrets never go in Git.
+ARVAN_ENDPOINT=
+ARVAN_BUCKET=
+ARVAN_REGION=default
+ARVAN_REQUEST_TIMEOUT_MS=5000
+# secrets/arvan_access_key_id and secrets/arvan_secret_access_key (dev only).
+
+# Required before deploying the ejabberd-only chat branch: merge deploy/ejabberd/env.example
+# into runtime.env and install chat.compose.yaml as described in deploy/ejabberd/README.md.

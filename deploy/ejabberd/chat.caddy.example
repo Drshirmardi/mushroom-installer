@@ -1,0 +1,17 @@
+# Import inside the EXISTING API site, before its normal reverse_proxy.
+# Using the API domain avoids adding a fifth public domain to the installer.
+# Replace both browser origins and the loopback port for this environment.
+# Example endpoint: wss://dev-api.example.invalid/xmpp-websocket
+
+@chat_policy path /v1/chat/ejabberd /v1/chat/ejabberd/*
+respond @chat_policy 404
+
+@chat_origin expression `{http.request.header.Origin} in ["https://dev-app.example.invalid", "https://dev-dashboard.example.invalid"]`
+route /xmpp-websocket {
+    reverse_proxy @chat_origin 127.0.0.1:5444
+    respond 403
+}
+
+respond /xmpp-websocket/* 403
+
+# Caddy handles TLS and WebSocket upgrades. Do not expose ejabberd:5280 or TCP/XMPP.

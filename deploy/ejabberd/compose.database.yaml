@@ -1,0 +1,24 @@
+# Installer-managed, private engine storage. Separate from the application database.
+services:
+  ejabberd:
+    pull_policy: never
+    depends_on:
+      chat-postgres:
+        condition: service_healthy
+  chat-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: "${EJABBERD_SQL_DB:?set the chat database}"
+      POSTGRES_USER: "${EJABBERD_SQL_USER:?set the chat database user}"
+      POSTGRES_PASSWORD: "${EJABBERD_SQL_PASSWORD:?set the chat database password}"
+    volumes: [chat_postgres_data:/var/lib/postgresql/data]
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.50
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  chat_postgres_data:

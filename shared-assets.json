@@ -1,0 +1,24 @@
+{
+  "upstreamRepository": "Drshirmardi/mushroom",
+  "upstreamCommit": "adbb43046e4e1b9514db9bb07878bc34d9b9f1b4",
+  "files": {
+    "deploy/vps/dev-env.example": "d12a8d3f4c4dc91d40571cd8ceb974d3ddc68e7f1317204f4d3027f9f15b3f1a",
+    "deploy/vps/env.example": "ac82400d282d06f83342e7f9f88e9ce0a30b8f448b50885187d49b7811f50c95",
+    "deploy/vps/production-env.example": "f1c7735d185bbd56c5cc547903a1680a262b3f27ed224a3cf48dd6f93a440408",
+    "deploy/vps/analytics.dev.env.example": "69a46c6353cae3f21a5cd418698d84e5688a64485e1be33b3fd4e8463ce638b0",
+    "config/ANALYTICS.md": "5f37f827299502e28ae37b7d410acab645439820380ef111d58a83218a438b51",
+    "config/ANALYTICS-ACCEPTANCE.md": "e6a318f08f485d26935ecfa93b8dd1e066bc459548d61f9290ed7dbbfe8ba017",
+    "deploy/vps/OBJECT-STORAGE.md": "e001c30d442d932637816558891a5f54ceb391f588e8da747c39116fa22064a5",
+    "deploy/vps/sadad-callback.caddy.example": "bcb96ff0040f72809a0d0d1f4100d3f2ff5e1c8f0b8a549d95e59d9ad9cc44a1",
+    "deploy/sadad-live-runbook.md": "a1ba66e2ffcc2873173731639cf81d0c8b2c63d42ea6479f2ba3357764157488",
+    "deploy/ejabberd/compose.yaml": "78f4bbcdf6e5ab742d420a36276ef64ce78a4eab916e183a34c50d6a49850e6b",
+    "deploy/ejabberd/compose.database.yaml": "e00850cb42f725d39c9871df5adc8f78a81fab535ab142969fd3e8b4aa26d54c",
+    "deploy/ejabberd/env.example": "484c45ce090d5debac0aa937be984b907e9717ab85c4be780507bd01df8cc67f",
+    "deploy/ejabberd/chat.caddy.example": "e00558330b34014801c82f022d9beb3d4ecdd5543ce5a308610a89feb68a440f",
+    "deploy/ejabberd/README.md": "6e0c597953bd7fa6b41833d3d50288a94a89da87dc5da14e89e5fd0377a6f185",
+    "deploy/ejabberd/Dockerfile": "fe1e705efe5e694cc43e82c929fa490a84c115d1e267fd0252fef72c2e0ac350",
+    "deploy/ejabberd/mod_sabz_chat.erl": "3f0cb5fe95f4340919f6393f1c379ecdd3bcf6363e5804e3a9458cf2ed2111f4",
+    "deploy/ejabberd/ejabberd.yml": "5083ef2afc2fa781741af056f8fac2f0017c3c832cccbeb45bc200d3b50804f1",
+    "scripts/ejabberd-public-key.mjs": "48212f7bd8e5f52a5ed150f14189437908cd82489a9f897539c46410cca3fd2d"
+  }
+}

@@ -1,0 +1,108 @@
+## Consultation-only profile; do not substitute the upstream demo configuration.
+define_macro:
+  XMPP_HOST: chat.example.invalid
+  BRIDGE_JID: bridge@chat.example.invalid
+  SQL_HOST: postgres
+  SQL_DB: mushroom_chat
+  SQL_USER: mushroom_chat
+  SQL_PASSWORD: set-outside-git
+  POLICY_URL: http://api:3003/v1/chat/ejabberd/policy
+
+hosts: [XMPP_HOST]
+loglevel: warning
+hide_sensitive_log_data: true
+auth_method: jwt
+# JWT sessions use native password verification, not the OAuth token backend.
+disable_sasl_mechanisms: [X-OAUTH2, OAUTHBEARER]
+# This mount must contain JSON JWK, not PEM (ejabberd uses jose_jwk:from_binary).
+jwt_key: /run/secrets/ejabberd_public_key
+jwt_jid_field: jid
+jwt_auth_only_rule: all
+default_db: sql
+sql_type: pgsql
+sql_server: SQL_HOST
+sql_database: SQL_DB
+sql_username: SQL_USER
+sql_password: SQL_PASSWORD
+sql_pool_size: 3
+update_sql_schema: true
+s2s_access: none
+
+listen:
+  # Only reverse-proxied WebSocket traffic is published. No TCP client/federation ports.
+  - port: 5281
+    module: ejabberd_http
+    request_handlers:
+      /xmpp-websocket: ejabberd_http_ws
+  # No public binding for administration or the engine policy API.
+  - port: 5280
+    module: ejabberd_http
+    request_handlers:
+      /api/v2: mod_http_api
+
+acl:
+  admin:
+    user: BRIDGE_JID
+  local:
+    user_regexp: ""
+
+access_rules:
+  local:
+    allow: local
+  muc:
+    allow: local
+  muc_create:
+    allow: admin
+
+api_permissions:
+  consultation_backend:
+    from: [mod_http_api]
+    who:
+      - acl: admin
+    what:
+      - create_room_with_opts
+      - get_room_options
+      - set_room_affiliation
+      - kick_session
+      - send_stanza
+      - status
+
+modules:
+  mod_admin_extra: {}
+  mod_muc_admin: {}
+  mod_disco: {}
+  mod_muc:
+    hosts: ["conference.@HOST@"]
+    access: muc
+    access_create: muc_create
+    access_persistent: muc_create
+    history_size: 0
+    db_type: sql
+    default_room_options:
+      persistent: true
+      members_only: true
+      public: false
+      public_list: false
+      allow_user_invites: false
+      allow_change_subj: false
+      allowpm: none
+      moderated: true
+      anonymous: true
+      mam: true
+      logging: false
+  mod_mam:
+    db_type: sql
+    default: always
+    # Retention/deletion is an owner-controlled policy, not an automatic cleanup job.
+    clear_archive_on_room_destroy: false
+  mod_ping:
+    send_pings: true
+    ping_interval: 60
+  mod_stream_mgmt:
+    resume_timeout: 300
+    max_ack_queue: 500
+  mod_sabz_chat:
+    policy_url: POLICY_URL
+    timeout_ms: 2500
+
+# No mod_register, roster/user search, upload/fileserver, calls or public MUC creation.

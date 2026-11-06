@@ -1,0 +1,31 @@
+name: Installer checks
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  installer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends age caddy
+      - name: Unit, real RSA/Caddy and package checks
+        run: |
+          python3 -B -m unittest discover -s installation -p 'test_*.py' -v
+          python3 -B scripts/check-shared-assets.py
+          python3 -B installation/build.py
+          bash -n installation/install.sh
+      - name: Real chat engine and retained SQL rehearsal
+        run: sudo env INSTALLER_CHAT_DOCKER_TEST=1 INSTALLER_TEST_USER="$USER" python3 -B -m unittest discover -s installation -p 'test_chat_docker.py' -v
+      - name: Real PostgreSQL encrypted backup and restore
+        run: node scripts/test-installation-restore.mjs

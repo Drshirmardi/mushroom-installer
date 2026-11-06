@@ -1,0 +1,51 @@
+# Required engine overlay for deploy/vps/compose[.dev].yaml; never modifies dev by itself.
+services:
+  api:
+    environment:
+      EJABBERD_DOMAIN: "${EJABBERD_DOMAIN:?set a private messaging domain}"
+      EJABBERD_WEBSOCKET_URL: "${EJABBERD_WEBSOCKET_URL:?set the public WSS endpoint}"
+      EJABBERD_API_URL: http://ejabberd:5280/api/v2
+      EJABBERD_POLICY_SECRET: "${EJABBERD_POLICY_SECRET:?set a distinct random secret outside Git}"
+      EJABBERD_JWT_PRIVATE_KEY_FILE: /run/secrets/ejabberd_private_key
+      EJABBERD_REQUEST_TIMEOUT_MS: "3000"
+    secrets: [ejabberd_private_key]
+
+  ejabberd:
+    image: "${EJABBERD_IMAGE:-mushroom-ejabberd:26.09-consultation}"
+    build:
+      context: "${EJABBERD_SOURCE_ROOT:?set the absolute checkout path}"
+      dockerfile: deploy/ejabberd/Dockerfile
+    environment:
+      EJABBERD_MACRO_XMPP_HOST: "${EJABBERD_DOMAIN:?set a private messaging domain}"
+      EJABBERD_MACRO_BRIDGE_JID: "bridge@${EJABBERD_DOMAIN}"
+      EJABBERD_MACRO_SQL_HOST: "${EJABBERD_SQL_HOST:-postgres}"
+      EJABBERD_MACRO_SQL_DB: "${EJABBERD_SQL_DB:-mushroom_chat}"
+      EJABBERD_MACRO_SQL_USER: "${EJABBERD_SQL_USER:-mushroom_chat}"
+      EJABBERD_MACRO_SQL_PASSWORD: "${EJABBERD_SQL_PASSWORD:?set the dedicated chat database password}"
+      EJABBERD_MACRO_POLICY_URL: "http://api:${EJABBERD_API_INTERNAL_PORT:-3003}/v1/chat/ejabberd/policy"
+      EJABBERD_POLICY_SECRET: "${EJABBERD_POLICY_SECRET:?set a distinct random secret outside Git}"
+    volumes:
+      - "${EJABBERD_SOURCE_ROOT:?set the absolute checkout path}/deploy/ejabberd/ejabberd.yml:/opt/ejabberd/conf/ejabberd.yml:ro"
+      - ejabberd_state:/opt/ejabberd/database
+    secrets: [ejabberd_public_key]
+    ports: ["127.0.0.1:${EJABBERD_PROXY_PORT:-5444}:5281"]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: "${EJABBERD_MEMORY_LIMIT:-512m}"
+    cpus: "${EJABBERD_CPUS:-0.50}"
+    healthcheck:
+      test: [CMD, ejabberdctl, status]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  ejabberd_state:
+
+secrets:
+  ejabberd_private_key:
+    file: "${EJABBERD_PRIVATE_KEY_PATH:?set an absolute private key file path outside Git}"
+  ejabberd_public_key:
+    file: "${EJABBERD_PUBLIC_KEY_PATH:?set an absolute public key file path outside Git}"

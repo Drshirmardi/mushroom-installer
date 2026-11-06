@@ -1,0 +1,9 @@
+# Import INSIDE the existing merchant main-domain site (drshirmardi.com).
+# This example targets the API on the same VPS at the dev API_PORT (3303).
+# Use the selected environment's API port; never route production payments to dev.
+@sadad_routes path /v1/payments/providers/sadad/callback /v1/payments/providers/sadad/start
+handle @sadad_routes {
+    reverse_proxy 127.0.0.1:3303 {
+        header_down Cache-Control "no-store"
+    }
+}
