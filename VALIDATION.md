@@ -23,3 +23,7 @@ Ubuntu24.04 full regression:88 cases (86 PASS/2 opt-in drills). New updater chec
 Local actionlint and Bash syntax PASS for reusable verification, serialized publication and draft-first assets. Public release publication waits for the full standalone Linux suite, fresh/legacy bootstrap containers, real chat engine SQL retention and encrypted PostgreSQL restore. Relevant main source changes trigger releases; documentation-only changes do not. Versions use v1.0.<publish-workflow-run-number>. Published assets are preserved on rerun and older reruns cannot replace Latest.
 
 Hosted I10 exposed a test-fixture root assumption; ced049e models privileged status without requiring the entire unit suite to run as root. All22 updater cases also PASS as uid1000 in a disposable container. No production permission check was changed.
+
+### Public acceptance — 2026-11-06
+
+Release v1.0.1 points to source26c638764a9cf075bce6196f383ef3d7f7b930a5. Hosted run42168105175 PASS:90 unit/regression cases (88 PASS/2 dedicated drills), fresh and legacy bootstrap containers, real chat retention and PostgreSQL encrypted restore. Four public assets downloaded anonymously; SHA-256 matched. Real anonymous bootstrap into a disposable Ubuntu24.04 container, CLI version, update --check and repeated update PASS. Rerunning publish job127731224980 (retry127731682342) PASS without replacing published assets; archive digest remains d3eac5e21fde353acb1ac2a309167dd567a8870c4ea125a939db26938e388914. No live server or application deployment.
