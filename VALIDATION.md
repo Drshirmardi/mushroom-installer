@@ -17,3 +17,9 @@ No live server operation performed.
 ## F12-T02-I10 — versioned self-update (2026-11-06)
 
 Ubuntu24.04 full regression:88 cases (86 PASS/2 opt-in drills). New updater checks cover real relocated CLI version, legacy/repeated install/rollback, private byte/mode preservation, rejected paths/links/duplicates/unknown files and hashes, startup/activation failure, common manager lock and offline/panel cache. Disposable bootstrap rehearsal verifies fresh/legacy install, repeated activation and corrupt download rejection. Windows updater tests, shell syntax and private application contracts PASS. Hosted I09 run42166707841 PASS including real chat SQL retention and encrypted restore. No live VPS updated.
+
+## F12-T02-I11 — automatic publication
+
+Local actionlint and Bash syntax PASS for reusable verification, serialized publication and draft-first assets. Public release publication waits for the full standalone Linux suite, fresh/legacy bootstrap containers, real chat engine SQL retention and encrypted PostgreSQL restore. Relevant main source changes trigger releases; documentation-only changes do not. Versions use v1.0.<publish-workflow-run-number>. Published assets are preserved on rerun and older reruns cannot replace Latest.
+
+Hosted I10 exposed a test-fixture root assumption; ced049e models privileged status without requiring the entire unit suite to run as root. All22 updater cases also PASS as uid1000 in a disposable container. No production permission check was changed.
