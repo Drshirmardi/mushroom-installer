@@ -131,7 +131,8 @@ class PosixUpdateTests(UpdateValidationTests):
 
     def test_automated_status_does_not_check_network(self):
         (self.state / 'installation.json').write_text(json.dumps({'version': 1, 'environments': {'dev': {}}}))
-        with patch.object(manager, 'STATE', self.state), patch.object(sys, 'argv', ['mushroom', 'status', '--environment', 'dev']), \
+        with patch.object(manager, 'STATE', self.state), patch.object(manager.os, 'geteuid', return_value=0), \
+                patch.object(sys, 'argv', ['mushroom', 'status', '--environment', 'dev']), \
                 patch.object(manager, 'compose_command', return_value=['docker', 'compose']), patch.object(manager, 'run'), \
                 patch.object(updater, 'release_info') as request:
             manager.main()
