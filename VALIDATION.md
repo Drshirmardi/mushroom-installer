@@ -13,3 +13,7 @@ Coordinator review: PASS. Explicit original bundle inputs only; no application s
 - Hosted real chat-engine rehearsal is retained in checks.yml and remains a publication gate for I11.
 
 No live server operation performed.
+
+## F12-T02-I10 — versioned self-update (2026-11-06)
+
+Ubuntu24.04 full regression:88 cases (86 PASS/2 opt-in drills). New updater checks cover real relocated CLI version, legacy/repeated install/rollback, private byte/mode preservation, rejected paths/links/duplicates/unknown files and hashes, startup/activation failure, common manager lock and offline/panel cache. Disposable bootstrap rehearsal verifies fresh/legacy install, repeated activation and corrupt download rejection. Windows updater tests, shell syntax and private application contracts PASS. Hosted I09 run42166707841 PASS including real chat SQL retention and encrypted restore. No live VPS updated.

@@ -21,12 +21,13 @@ import sys
 import tempfile
 import time
 import unicodedata
+import updater
 from urllib.parse import parse_qs, unquote, urlsplit
 from urllib.request import urlopen
 
 BUNDLE = Path(__file__).resolve().parent.parent
 BUNDLE_FILES = [
-    'installation/install.sh', 'installation/manager.py', 'installation/README.md',
+    'installation/install.sh', 'installation/manager.py', 'installation/updater.py', 'installation/README.md',
     'deploy/vps/dev-env.example', 'deploy/vps/env.example', 'deploy/vps/production-env.example',
     'deploy/vps/analytics.dev.env.example', 'config/ANALYTICS.md', 'config/ANALYTICS-ACCEPTANCE.md',
     'deploy/vps/OBJECT-STORAGE.md', 'deploy/vps/sadad-callback.caddy.example', 'deploy/sadad-live-runbook.md',
@@ -1180,6 +1181,8 @@ def panel(config):
     require(sys.stdin.isatty() and sys.stdout.isatty(),
             'The panel needs an interactive terminal. Use "sudo mushroom status|doctor|logs" for non-interactive checks.')
     try:
+        if updater.panel_offer(BUNDLE):
+            os.execv(sys.executable, [sys.executable, '-X', 'utf8', str(updater.ROOT / 'current/installation/manager.py'), 'panel'])
         run_panel(config)
     except KeyboardInterrupt:
         print('\nPanel closed.')
@@ -1304,6 +1307,9 @@ def audit_environment(repository, current=False):
 
 
 def persist_bundle():
+    if (BUNDLE / 'release.json').is_file():
+        updater.install_local(BUNDLE)
+        return
     destination = Path('/opt/mushroom-installer')
     if BUNDLE != destination:
         for name in BUNDLE_FILES:
@@ -1439,13 +1445,21 @@ def lock():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', choices=['install', 'panel', 'setup-chat', 'setup-storage', 'setup-analytics', 'configure', 'doctor', 'verify', 'github', 'status', 'logs', 'restart', 'backup', 'restore', 'audit-env'])
+    parser.add_argument('command', nargs='?', choices=['install', 'panel', 'update', 'setup-chat', 'setup-storage', 'setup-analytics', 'configure', 'doctor', 'verify', 'github', 'status', 'logs', 'restart', 'backup', 'restore', 'audit-env'])
+    parser.add_argument('--version', nargs='?', const='__current__', help='Print tool version, or select a release for update')
+    parser.add_argument('--check', action='store_true', help='Only check for an installer update')
+    parser.add_argument('--yes', action='store_true', help='Confirm an explicitly requested unattended downgrade')
     parser.add_argument('--environment', choices=ENVIRONMENTS)
     parser.add_argument('--repository', default=str(BUNDLE))
     parser.add_argument('--current', action='store_true', help='Audit existing .env key names without displaying values')
     parser.add_argument('--archive', help='Encrypted .dump.age backup to restore into a separate test database')
     parser.add_argument('--target-url-file', help='Protected file containing the empty restore-test database URL')
     args = parser.parse_args()
+    if args.version == '__current__':
+        print(updater.current_version(BUNDLE))
+        return
+    if (args.version or args.check or args.yes) and args.command != 'update':
+        parser.error('--version TAG, --check and --yes require update')
     if args.command == 'audit-env':
         audit_environment(args.repository, args.current)
         return
@@ -1454,6 +1468,12 @@ def main():
     require('VERSION_ID="24.04"' in Path('/etc/os-release').read_text() and 'ID=ubuntu' in Path('/etc/os-release').read_text(),
             'Only Ubuntu 24.04 is supported.')
     with lock():
+        if args.command == 'update':
+            try:
+                updater.update(args.version, args.check, args.yes)
+            except updater.UpdateError as error:
+                raise InstallationError(str(error)) from None
+            return
         path = STATE / 'installation.json'
         if args.command is None:
             args.command = 'panel' if path.exists() else 'install'
