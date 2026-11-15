@@ -26,6 +26,15 @@ PUBLIC_GA4_MEASUREMENT_ID=
 PUBLIC_ANALYTICS_CONSENT=denied
 PUBLIC_ANALYTICS_DEBUG=false
 ANALYTICS_SERVER_ENABLED=false
+# Bale authentication is disabled until the bot token and webhook are provisioned privately.
+# The standalone mushroom-installer manages the Dev setup with:
+# sudo mushroom setup-bale --environment dev
+# Private credential files (never put values in runtime.env):
+# secrets/bale_bot_token and secrets/bale_webhook_secret
+BALE_AUTH_ENABLED=false
+BALE_BOT_USERNAME=
+BALE_BOT_TOKEN_FILE=/run/optional-secrets/bale_bot_token
+BALE_WEBHOOK_SECRET_FILE=/run/optional-secrets/bale_webhook_secret
 JWT_ACCESS_ISSUER=sabz-zendegi-api
 JWT_ACCESS_AUDIENCE=sabz-zendegi-frontends
 COMMERCE_RESERVATION_TTL_MINUTES=20
