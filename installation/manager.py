@@ -363,6 +363,34 @@ def bale_public_origin(value):
     return value.rstrip('/')
 
 
+def validate_bale_runtime(values, root, environment):
+    """Validate enabled Bale configuration locally, without logging credential contents."""
+    flag = values.get('BALE_AUTH_ENABLED', 'false')
+    require(flag in ('true', 'false'), 'Invalid Bale feature flag.')
+    if flag == 'false':
+        return
+    require(environment == 'dev', 'Bale auth must remain disabled outside Dev.')
+    root = Path(root)
+    directory = root / 'secrets'
+    require(root.is_dir() and not root.is_symlink() and directory.is_dir()
+            and not directory.is_symlink(), 'Bale private directories are missing or unsafe.')
+    app_origin = bale_public_origin(values.get('PUBLIC_APP_URL', ''))
+    bale_public_origin(values.get('PUBLIC_API_URL', ''))
+    bale_username(values.get('BALE_BOT_USERNAME', ''))
+    origins = {origin.strip().rstrip('/') for origin in values.get('APP_ORIGINS', '').split(',')}
+    require(app_origin in origins, 'Bale app origin is missing from APP_ORIGINS.')
+    for name, variable, validator in (
+        ('bale_bot_token', 'BALE_BOT_TOKEN_FILE', bale_bot_token),
+        ('bale_webhook_secret', 'BALE_WEBHOOK_SECRET_FILE', bale_webhook_secret),
+    ):
+        require(values.get(variable) == '/run/optional-secrets/' + name,
+                'Bale private-file runtime path is invalid.')
+        path = directory / name
+        require(path.is_file() and not path.is_symlink(), 'Bale credential file is missing or unsafe.')
+        require((path.stat().st_mode & 0o777) == 0o600, 'Bale credential file permissions must be 0600.')
+        validator(path.read_text(encoding='utf-8').strip())
+
+
 def bale_configuration(values, root):
     """Collect private credentials separately; never place them in runtime.env or installation.json."""
     values, root = dict(values), Path(root)
@@ -1399,6 +1427,7 @@ def doctor(config, deployed=False):
     for environment, spec in config['environments'].items():
         root = Path(spec['home']) / 'mushroom' / environment
         values = load_env(root / 'runtime.env')
+        validate_bale_runtime(values, root, environment)
         mode = values.get('PRODUCT_MEDIA_STORAGE_MODE', 'disabled')
         require(mode in ('disabled', 'r2', 'arvancloud'), 'Unknown object storage mode; run setup-storage --environment dev.')
         require(environment == 'dev' or mode == 'disabled', 'Object storage must remain disabled outside the supported dev runtime.')

@@ -215,6 +215,49 @@ class InstallationTests(unittest.TestCase):
         self.assertNotIn('d' * 64, output.getvalue())
         self.assertNotIn('syntheticBaleTestToken123', output.getvalue())
 
+    def test_bale_doctor_accepts_disabled_or_complete_private_configuration(self):
+        root = self.write('dev')
+        values = manager.load_env(root / 'runtime.env')
+        manager.validate_bale_runtime(values, root, 'dev')
+        values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME='health_test_bot',
+                      BALE_BOT_TOKEN_FILE='/run/optional-secrets/bale_bot_token',
+                      BALE_WEBHOOK_SECRET_FILE='/run/optional-secrets/bale_webhook_secret')
+        manager.atomic_write(root / 'secrets/bale_bot_token', '123456789:syntheticBaleTestToken123')
+        manager.atomic_write(root / 'secrets/bale_webhook_secret', 'z' * 64)
+        manager.validate_bale_runtime(values, root, 'dev')
+        self.assertNotIn('syntheticBaleTestToken123', json.dumps(values))
+
+    def test_bale_doctor_rejects_malformed_or_unsafe_enabled_configuration(self):
+        root = self.write('dev')
+        values = manager.load_env(root / 'runtime.env')
+        values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME='health_test_bot',
+                      BALE_BOT_TOKEN_FILE='/run/optional-secrets/bale_bot_token',
+                      BALE_WEBHOOK_SECRET_FILE='/run/optional-secrets/bale_webhook_secret')
+        token = '123456789:syntheticBaleTestToken123'
+        manager.atomic_write(root / 'secrets/bale_bot_token', token)
+        manager.atomic_write(root / 'secrets/bale_webhook_secret', 's' * 64)
+        for key, bad_value in (
+            ('BALE_BOT_TOKEN_FILE', '/tmp/token'),
+            ('BALE_WEBHOOK_SECRET_FILE', '/tmp/webhook'),
+            ('APP_ORIGINS', 'https://unrelated.example.test'),
+            ('PUBLIC_API_URL', 'http://insecure.example.test'),
+            ('BALE_BOT_USERNAME', '../../unsafe'),
+        ):
+            with self.subTest(setting=key):
+                invalid = dict(values, **{key: bad_value})
+                with self.assertRaises(manager.InstallationError) as error:
+                    manager.validate_bale_runtime(invalid, root, 'dev')
+                self.assertNotIn(token, str(error.exception))
+        with self.assertRaises(manager.InstallationError):
+            manager.validate_bale_runtime(values, root, 'production')
+        (root / 'secrets/bale_bot_token').chmod(0o644)
+        with self.assertRaisesRegex(manager.InstallationError, '0600'):
+            manager.validate_bale_runtime(values, root, 'dev')
+        (root / 'secrets/bale_bot_token').chmod(0o600)
+        (root / 'secrets/bale_webhook_secret').unlink()
+        with self.assertRaisesRegex(manager.InstallationError, 'missing or unsafe'):
+            manager.validate_bale_runtime(values, root, 'dev')
+
     def test_storage_switch_requires_transfer_confirmation_before_any_write(self):
         root = self.write('dev')
         values = manager.load_env(root / 'runtime.env')
