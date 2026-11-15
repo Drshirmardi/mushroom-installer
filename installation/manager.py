@@ -390,7 +390,7 @@ def bale_configuration(values, root):
     else:
         replace = True
     if replace:
-        credentials['bale_bot_token'] = ask('Bale bot token (hidden)', secret=True, validator=bale_bot_token)
+        credentials['bale_bot_token'] = bale_bot_token(ask('Bale bot token (hidden)', secret=True, validator=bale_bot_token))
     if secret_file.exists() and secret_file.stat().st_size:
         bale_webhook_secret(secret_file.read_text(encoding='utf-8').strip())
     else:
