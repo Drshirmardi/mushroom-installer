@@ -199,6 +199,9 @@ sudo mushroom
 | `9` | خلاصهٔ اتصال GitHub | `sudo mushroom github` |
 | `10` | اعمال دوبارهٔ پروکسی/TLS | بازتولید `mushroom.caddy` و reload کدی |
 | `11` | ادامهٔ نصب | `sudo mushroom install` |
+| `12` | تنظیم آنالیتیکس Dev | `sudo mushroom setup-analytics --environment dev` |
+| `13` | تنظیم ورود مینی‌اپ بله Dev | `sudo mushroom setup-bale --environment dev` |
+| `14` | ثبت Webhook بله پس از استقرار | `sudo mushroom register-bale-webhook --environment dev` |
 | `q` | خروج | — |
 
 قواعد ایمنی پنل:
@@ -223,6 +226,8 @@ sudo mushroom restart --environment production
 sudo mushroom configure --environment dev
 sudo mushroom setup-storage --environment dev
 sudo mushroom setup-analytics --environment dev
+sudo mushroom setup-bale --environment dev
+sudo mushroom register-bale-webhook --environment dev
 sudo mushroom backup --environment production
 sudo mushroom restore --environment production --archive /var/backups/mushroom/production/BACKUP.dump.age --target-url-file /root/restore-test-url
 ```
@@ -250,6 +255,66 @@ Secret موجود بدون انتخاب صریح جایگزین نمی‌شود�
 `restart` تنظیمات Compose جدید را وارد کانتینر موجود نمی‌کند. سپس دریافت واقعی رویدادهای
 مرورگر و بک‌اند را طبق `config/ANALYTICS-ACCEPTANCE.md` بررسی کنید. موفقیت نصاب به معنی
 تأیید دریافت در GA4 نیست؛ Production به‌صورت پیش‌فرض خاموش می‌ماند.
+
+## فعال‌سازی امن Bale Mini App در محیط Dev
+
+این قابلیت **فقط برای Dev** است و در زمان نصب اولیه به‌صورت پیش‌فرض خاموش باقی می‌ماند.
+کاربر بله مستقیماً وارد `apps/app/bale` می‌شود؛ `apps/web` در مسیر ورود نیست.
+ابتدا باید نسخهٔ اپلیکیشن شامل Bale Auth و مهاجرت مربوطه روی Dev مستقر شده باشد.
+
+پس از انتشار و نصب نسخهٔ جدید همین Installer:
+
+```bash
+sudo mushroom update --check
+sudo mushroom update
+sudo mushroom setup-bale --environment dev
+```
+
+یا در پنل `sudo mushroom` گزینهٔ ۱۳ را انتخاب کنید. پنل این مقادیر را دریافت می‌کند:
+حالت `disabled/enabled`، نام کاربری عمومی بازو و **توکن بازو از ورودی مخفی**.
+یک Secret مستقلِ Webhook را خودش با تصادف امن می‌سازد و بدون تأیید صریح
+توکن قبلی را جایگزین نمی‌کند. مقادیر خصوصی در
+`<DEV_ROOT>/secrets/bale_bot_token` و
+`<DEV_ROOT>/secrets/bale_webhook_secret`
+با مجوز `0600` ذخیره می‌شوند؛ فقط نام عمومی بازو، فلگ و مسیر فایل‌ها در
+`runtime.env` قرار دارند و هیچ Secretای وارد `installation.json` نمی‌شود.
+
+در BotFather بله، آدرس **مینی‌اپ اصلی** را
+`https://<public-dev-app-host>/bale` تنظیم کنید.
+سپس workflow **Sync shared dev VPS** را مجدداً اجرا کنید؛ تغییر فلگ یا فایل Secret
+باید باعث بازآفرینی کانتینر API شود. `docker compose restart` به‌تنهایی
+برای اعمال environment جدید کافی نیست.
+
+پس از آماده‌بودن API و HTTPS، با فرمان زیر Webhook را ثبت کنید:
+
+```bash
+sudo mushroom register-bale-webhook --environment dev
+```
+
+یا در پنل گزینهٔ ۱۴ را با تأیید صریح انتخاب کنید. Installer ابتدا
+`getWebhookInfo` بله را بررسی می‌کند. اگر Webhook فعلی به مسیر دیگری وصل باشد،
+**بدون جایگزینی** متوقف می‌شود؛ برای بازوی مشترک باید ابتدا مسیر دریافت پیام
+و forwarding طراحی شود. اگر Webhookی ثبت نشده باشد، با رضایت صریح `setWebhook`
+را اجرا و وضعیت جدید را دوباره بررسی می‌کند. آدرس کامل Webhook حاوی Secret است
+و در خروجی پنل، فایل‌های لاگ یا state نشان داده نمی‌شود.
+
+فرمان `sudo mushroom doctor` در صورت فعال بودن بله، تنظیمات HTTPS، Origin مجاز، مسیر فایل‌ها، فرمت Secretها و مجوز `0600` را به‌صورت محلی بررسی می‌کند؛ این بررسی به‌معنای تأیید ثبت واقعی Webhook نیست.
+
+در نسخهٔ وب بله، مینی‌اپ در iframe اجرا می‌شود و Cookie فعلی API با
+`SameSite=Lax` ممکن است برای Refresh ماندگار نباشد. تا پیش از آزمایش
+روی **بله اندروید و بله وب**، موفقیت ورود/تمدید نشست را تأیید نکنید.
+همچنین Secret URL نباید در لاگ‌های Caddy، CDN و پروکسی منتشر شود.
+
+برای خاموش‌کردن، `setup-bale` را دوباره اجرا و `disabled` انتخاب کنید
+و Dev را مجدداً deploy کنید. این کار **کلیدها را پاک نمی‌کند** و
+Webhook راه‌دور را هم حذف نمی‌کند؛ اگر قبلاً ثبت شده، دریافت پیام‌های آن
+باید جداگانه مدیریت شود. بازویی که با `getUpdates` کار می‌کند نیز
+نباید بدون هماهنگی به Webhook منتقل شود.
+
+**تست پذیرش:** امضای `initData`، تأیید `requestContact` توسط سرور،
+ورود کاربر جدید، اتصال امن کاربر قبلی با OTP، اجرای مجدد در وب و اندروید،
+تمدید نشست، مسیرهای رزرو و پرداخت. این تنظیمات به‌خودی‌خود اثبات
+کارکرد عملی Mini App نیستند.
 
 ## انتخاب Cloudflare یا آروان برای تصاویر
 

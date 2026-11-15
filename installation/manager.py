@@ -23,7 +23,7 @@ import time
 import unicodedata
 import updater
 from urllib.parse import parse_qs, unquote, urlsplit
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 BUNDLE = Path(__file__).resolve().parent.parent
 BUNDLE_FILES = [
@@ -46,6 +46,7 @@ SECRET_NAMES = (
     'payment_credential_encryption_key', 'payment_credential_decryption_keys',
 )
 RUNTIME_DEFAULTS = {
+    'BALE_AUTH_ENABLED': 'false', 'BALE_BOT_USERNAME': '',
     'PUBLIC_GA4_MEASUREMENT_ID': '', 'PUBLIC_ANALYTICS_CONSENT': 'denied',
     'PUBLIC_ANALYTICS_DEBUG': 'false', 'ANALYTICS_SERVER_ENABLED': 'false',
     'LOG_LEVEL': 'info', 'JWT_ACCESS_ISSUER': 'sabz-zendegi-api',
@@ -328,6 +329,186 @@ def configure_analytics(config, environment):
     print('Dev analytics configuration saved. Secret stays in secrets/ga4_api_secret. '
           'Deploy this analytics-capable branch and rerun the Dev workflow to apply settings. '
           'Configuration alone does not verify GA4 receipt.')
+
+
+
+def bale_bot_token(value):
+    """Validate bot tokens without ever echoing sensitive values."""
+    require(bool(re.fullmatch(r'[0-9]{1,20}:[A-Za-z0-9_-]{10,235}', value)) and len(value) <= 256,
+            'Bale bot token format is invalid.')
+    return value
+
+
+def bale_webhook_secret(value):
+    require(bool(re.fullmatch(r'[A-Za-z0-9_-]{43,256}', value)),
+            'Bale webhook secret must be 43..256 URL-safe characters.')
+    return value
+
+
+def bale_username(value):
+    value = value.removeprefix('@')
+    require(bool(re.fullmatch(r'[A-Za-z0-9_]{3,64}', value)),
+            'Bale bot username must contain 3..64 letters, digits or underscores.')
+    return value
+
+
+def bale_public_origin(value):
+    try:
+        parsed = urlsplit(value)
+        valid = parsed.scheme == 'https' and parsed.hostname and parsed.port in (None, 443) and not (
+            parsed.username or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment)
+    except ValueError:
+        valid = False
+    require(valid, 'Bale requires a public HTTPS app/API origin without a path or credentials.')
+    return value.rstrip('/')
+
+
+def validate_bale_runtime(values, root, environment):
+    """Validate enabled Bale configuration locally, without logging credential contents."""
+    flag = values.get('BALE_AUTH_ENABLED', 'false')
+    require(flag in ('true', 'false'), 'Invalid Bale feature flag.')
+    if flag == 'false':
+        return
+    require(environment == 'dev', 'Bale auth must remain disabled outside Dev.')
+    root = Path(root)
+    directory = root / 'secrets'
+    require(root.is_dir() and not root.is_symlink() and directory.is_dir()
+            and not directory.is_symlink(), 'Bale private directories are missing or unsafe.')
+    app_origin = bale_public_origin(values.get('PUBLIC_APP_URL', ''))
+    bale_public_origin(values.get('PUBLIC_API_URL', ''))
+    bale_username(values.get('BALE_BOT_USERNAME', ''))
+    origins = {origin.strip().rstrip('/') for origin in values.get('APP_ORIGINS', '').split(',')}
+    require(app_origin in origins, 'Bale app origin is missing from APP_ORIGINS.')
+    for name, variable, validator in (
+        ('bale_bot_token', 'BALE_BOT_TOKEN_FILE', bale_bot_token),
+        ('bale_webhook_secret', 'BALE_WEBHOOK_SECRET_FILE', bale_webhook_secret),
+    ):
+        require(values.get(variable) == '/run/optional-secrets/' + name,
+                'Bale private-file runtime path is invalid.')
+        path = directory / name
+        require(path.is_file() and not path.is_symlink(), 'Bale credential file is missing or unsafe.')
+        require((path.stat().st_mode & 0o777) == 0o600, 'Bale credential file permissions must be 0600.')
+        validator(path.read_text(encoding='utf-8').strip())
+
+
+def bale_configuration(values, root):
+    """Collect private credentials separately; never place them in runtime.env or installation.json."""
+    values, root = dict(values), Path(root)
+    directory = root / 'secrets'
+    require(not root.is_symlink() and directory.is_dir() and not directory.is_symlink(),
+            'Bale setup requires an existing private secrets directory.')
+    previous = 'enabled' if values.get('BALE_AUTH_ENABLED') == 'true' else 'disabled'
+    mode = ask('Bale Mini App: disabled / enabled', previous,
+               lambda value: choice(value, ['disabled', 'enabled']))
+    if mode == 'disabled':
+        values['BALE_AUTH_ENABLED'] = 'false'
+        return values, {}
+    bale_public_origin(values.get('PUBLIC_APP_URL', ''))
+    bale_public_origin(values.get('PUBLIC_API_URL', ''))
+    username = ask('Bale bot username (without @)', values.get('BALE_BOT_USERNAME', ''), bale_username)
+    token_file, secret_file = directory / 'bale_bot_token', directory / 'bale_webhook_secret'
+    for path in (token_file, secret_file):
+        require(not path.is_symlink() and (not path.exists() or path.is_file()),
+                'Bale credentials must be ordinary files, not symlinks.')
+    credentials = {}
+    if token_file.exists() and token_file.stat().st_size:
+        bale_bot_token(token_file.read_text(encoding='utf-8').strip())
+        replace = ask('Replace existing Bale bot token: yes / no', 'no',
+                      lambda value: choice(value, ['yes', 'no'])) == 'yes'
+    else:
+        replace = True
+    if replace:
+        credentials['bale_bot_token'] = bale_bot_token(ask('Bale bot token (hidden)', secret=True, validator=bale_bot_token))
+    if secret_file.exists() and secret_file.stat().st_size:
+        bale_webhook_secret(secret_file.read_text(encoding='utf-8').strip())
+    else:
+        credentials['bale_webhook_secret'] = secrets.token_urlsafe(48)
+    values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME=username,
+                  BALE_BOT_TOKEN_FILE='/run/optional-secrets/bale_bot_token',
+                  BALE_WEBHOOK_SECRET_FILE='/run/optional-secrets/bale_webhook_secret')
+    return values, credentials
+
+
+def configure_bale(config, environment):
+    require(environment == 'dev' and environment in config['environments'],
+            'Use setup-bale --environment dev; other environments remain unchanged.')
+    root = Path(config['environments'][environment]['home']) / 'mushroom' / environment
+    require(not root.is_symlink() and not (root / 'runtime.env').is_symlink()
+            and (root / 'runtime.env').is_file() and (root / 'secrets').is_dir(),
+            'Prepare the Dev environment before configuring Bale.')
+    values, credentials = bale_configuration(load_env(root / 'runtime.env'), root)
+    owner = (root.stat().st_uid, root.stat().st_gid)
+    if values.get('BALE_AUTH_ENABLED') == 'true':
+        for name in ('bale_bot_token', 'bale_webhook_secret'):
+            path = root / 'secrets' / name
+            if name not in credentials:
+                require(path.is_file() and not path.is_symlink(), 'Existing Bale secret is missing or unsafe.')
+                os.chmod(path, 0o600)
+                os.chown(path, *owner)
+    # The existing atomic writer writes private secret files before enabling the public runtime flag.
+    write_media_configuration(root, values, credentials, owner)
+    save(config)
+    if values.get('BALE_AUTH_ENABLED') == 'true':
+        print('Dev Bale configuration saved. Set main mini-app URL in Bale BotFather to '
+              + bale_public_origin(values['PUBLIC_APP_URL']) + '/bale')
+        print('Bot link: https://ble.ir/' + values['BALE_BOT_USERNAME'] + '?startapp')
+        print('Deploy Dev before running "sudo mushroom register-bale-webhook --environment dev".'
+              ' The bot webhook has NOT been changed.')
+    else:
+        print('Dev Bale auth disabled; old secrets and any existing remote webhook are preserved.')
+
+
+def bale_bot_api(token, method, payload=None):
+    """Use HTTPS without command-line token arguments or token-bearing exception output."""
+    bale_bot_token(token)
+    require(method in ('getWebhookInfo', 'setWebhook'), 'Unsupported Bale method.')
+    request = Request('https://tapi.bale.ai/bot' + token + '/' + method,
+                      data=json.dumps(payload or {}).encode('utf-8'), method='POST',
+                      headers={'Content-Type': 'application/json'})
+    try:
+        with urlopen(request, timeout=12) as response:
+            value = json.loads(response.read(8192))
+    except Exception:
+        raise InstallationError('Bale API request failed; check connectivity and credentials privately.') from None
+    require(isinstance(value, dict) and value.get('ok') is True,
+            'Bale API rejected the operation; successful registration is NOT assumed.')
+    return value.get('result')
+
+
+def register_bale_webhook(config, environment):
+    """Refuse to override a bot which already has a different webhook target."""
+    require(environment == 'dev' and environment in config['environments'],
+            'Use register-bale-webhook --environment dev.')
+    root = Path(config['environments'][environment]['home']) / 'mushroom' / environment
+    require(not root.is_symlink() and not (root / 'runtime.env').is_symlink()
+            and (root / 'runtime.env').is_file(), 'Dev runtime is missing.')
+    values = load_env(root / 'runtime.env')
+    require(values.get('BALE_AUTH_ENABLED') == 'true',
+            'Configure and deploy Bale in Dev before registering its webhook.')
+    token_file, secret_file = root / 'secrets/bale_bot_token', root / 'secrets/bale_webhook_secret'
+    for path in (token_file, secret_file):
+        require(path.is_file() and not path.is_symlink(), 'Bale secret is missing or unsafe.')
+    token = bale_bot_token(token_file.read_text(encoding='utf-8').strip())
+    secret = bale_webhook_secret(secret_file.read_text(encoding='utf-8').strip())
+    expected = bale_public_origin(values.get('PUBLIC_API_URL', '')) + '/v1/integrations/bale/webhook/' + secret
+    info = bale_bot_api(token, 'getWebhookInfo')
+    require(isinstance(info, dict) and isinstance(info.get('url'), str),
+            'Bale returned an invalid webhook status.')
+    if info['url'] == expected:
+        print('Bale Dev webhook already matches; no update made.')
+        return
+    require(not info['url'], 'Existing Bale webhook belongs to another receiver; refusing to replace it.'
+            ' Review the existing bot integration first.')
+    require(ask('Register Dev Bale webhook now: yes / no', 'no',
+                lambda value: choice(value, ['yes', 'no'])) == 'yes',
+            'Cancelled; remote webhook unchanged.')
+    require(bale_bot_api(token, 'setWebhook', {'url': expected}) is True,
+            'Bale did not acknowledge the webhook registration.')
+    confirmed = bale_bot_api(token, 'getWebhookInfo')
+    require(isinstance(confirmed, dict) and confirmed.get('url') == expected,
+            'Bale webhook verification did not match the configured endpoint.')
+    print('Dev Bale webhook registered; no secrets or full webhook URL were printed.'
+          ' Test a real requestContact in the Bale client.')
 
 
 def new_configuration():
@@ -982,6 +1163,17 @@ def setup_storage(config):
     configure_storage(config, 'dev')
 
 
+def setup_bale(config):
+    require('dev' in config['environments'], 'Bale setup requires an installed Dev environment.')
+    persist_bundle()
+    configure_bale(config, 'dev')
+
+
+def setup_bale_webhook(config):
+    require('dev' in config['environments'], 'Bale webhook registration needs Dev.')
+    register_bale_webhook(config, 'dev')
+
+
 def setup_analytics(config):
     require('dev' in config['environments'], 'Analytics setup needs an installed dev environment.')
     persist_bundle()
@@ -1022,7 +1214,8 @@ def environment_state(config, environment):
     return {'prepared': prepared, 'deployed': (root / 'state/current').is_file(),
             'chat': (root / 'state/chat.initialized').is_file(),
             'firstAdmin': (root / 'bootstrap/first-run.json').is_file(),
-            'media': values.get('PRODUCT_MEDIA_STORAGE_MODE', 'disabled') if prepared else 'unknown'}
+            'media': values.get('PRODUCT_MEDIA_STORAGE_MODE', 'disabled') if prepared else 'unknown',
+            'bale': 'enabled' if prepared and values.get('BALE_AUTH_ENABLED') == 'true' else 'disabled'}
 
 
 def render_panel(config, actions, note=None):
@@ -1038,6 +1231,7 @@ def render_panel(config, actions, note=None):
             ('first-admin-pending', state['firstAdmin']),
             ('backup', bool((config['environments'][environment] or {}).get('backupEnabled')))) if active]
         flags.append('media=' + str(state['media']))
+        flags.append('bale=' + str(state['bale']))
         lines.append(f'  {environment:<12} ' + ' '.join(flags))
     lines.append('')
     lines.extend('  [' + action.key + '] ' + action.label
@@ -1093,6 +1287,16 @@ def panel_analytics(config, environment=None):
     setup_analytics(config)
 
 
+def panel_bale(config, environment=None):
+    require(environment == 'dev', 'Bale setup is available only in Dev.')
+    setup_bale(config)
+
+
+def panel_bale_webhook(config, environment=None):
+    require(environment == 'dev', 'Bale webhook registration is available only in Dev.')
+    setup_bale_webhook(config)
+
+
 def panel_backup(config, environment=None):
     backup(config, environment)
 
@@ -1124,9 +1328,11 @@ def panel_menu(config):
         PanelAction('10', 'Re-apply proxy/TLS configuration', panel_proxy, False, True),
         PanelAction('11', 'Resume full installation', panel_install, False, True),
         PanelAction('12', 'Configure dev analytics (hidden API secret)', panel_analytics),
+        PanelAction('13', 'Configure Dev Bale Mini App (private bot token)', panel_bale, True),
+        PanelAction('14', 'Register Dev Bale webhook (after deployment)', panel_bale_webhook, True, True),
     ]
     if 'dev' not in config['environments']:
-        actions = [action for action in actions if action.handler not in (panel_storage, panel_analytics)]
+        actions = [action for action in actions if action.handler not in (panel_storage, panel_analytics, panel_bale, panel_bale_webhook)]
     return actions
 
 
@@ -1221,6 +1427,7 @@ def doctor(config, deployed=False):
     for environment, spec in config['environments'].items():
         root = Path(spec['home']) / 'mushroom' / environment
         values = load_env(root / 'runtime.env')
+        validate_bale_runtime(values, root, environment)
         mode = values.get('PRODUCT_MEDIA_STORAGE_MODE', 'disabled')
         require(mode in ('disabled', 'r2', 'arvancloud'), 'Unknown object storage mode; run setup-storage --environment dev.')
         require(environment == 'dev' or mode == 'disabled', 'Object storage must remain disabled outside the supported dev runtime.')
@@ -1445,7 +1652,7 @@ def lock():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', choices=['install', 'panel', 'update', 'setup-chat', 'setup-storage', 'setup-analytics', 'configure', 'doctor', 'verify', 'github', 'status', 'logs', 'restart', 'backup', 'restore', 'audit-env'])
+    parser.add_argument('command', nargs='?', choices=['install', 'panel', 'update', 'setup-chat', 'setup-storage', 'setup-analytics', 'setup-bale', 'register-bale-webhook', 'configure', 'doctor', 'verify', 'github', 'status', 'logs', 'restart', 'backup', 'restore', 'audit-env'])
     parser.add_argument('--version', nargs='?', const='__current__', help='Print tool version, or select a release for update')
     parser.add_argument('--check', action='store_true', help='Only check for an installer update')
     parser.add_argument('--yes', action='store_true', help='Confirm an explicitly requested unattended downgrade')
@@ -1496,6 +1703,12 @@ def main():
         elif args.command == 'setup-analytics':
             require(args.environment == 'dev', 'Use setup-analytics --environment dev; Production stays unchanged.')
             setup_analytics(config)
+        elif args.command == 'setup-bale':
+            require(args.environment == 'dev', 'Use setup-bale --environment dev.')
+            setup_bale(config)
+        elif args.command == 'register-bale-webhook':
+            require(args.environment == 'dev', 'Use register-bale-webhook --environment dev.')
+            setup_bale_webhook(config)
         elif args.command == 'configure':
             configure(config, args.environment)
         elif args.command in ('doctor', 'verify'):

@@ -118,6 +118,146 @@ class InstallationTests(unittest.TestCase):
         if os.name == 'posix':
             self.assertEqual((root / 'secrets/ga4_api_secret').stat().st_mode & 0o777, 0o600)
 
+    def test_bale_configuration_uses_private_files_and_defaults_disabled(self):
+        root = self.write('dev')
+        public = manager.load_env(root / 'runtime.env')
+        self.assertEqual(public.get('BALE_AUTH_ENABLED'), 'false')
+        token = '123456789:syntheticBaleTestToken123'
+        with patch('manager.ask', side_effect=['enabled', 'health_test_bot', token]) as prompts, \
+                patch('manager.secrets.token_urlsafe', return_value='a' * 64):
+            values, credentials = manager.bale_configuration(public, root)
+        self.assertEqual(values['BALE_AUTH_ENABLED'], 'true')
+        self.assertEqual(values['BALE_BOT_USERNAME'], 'health_test_bot')
+        self.assertEqual(values['BALE_BOT_TOKEN_FILE'], '/run/optional-secrets/bale_bot_token')
+        self.assertEqual(values['BALE_WEBHOOK_SECRET_FILE'], '/run/optional-secrets/bale_webhook_secret')
+        self.assertEqual(credentials, {'bale_bot_token': token, 'bale_webhook_secret': 'a' * 64})
+        self.assertTrue(prompts.call_args_list[-1].kwargs.get('secret'))
+        self.assertNotIn(token, json.dumps(values))
+        self.assertNotIn('a' * 64, json.dumps(values))
+        self.assertNotIn(token, json.dumps(self.config))
+
+    def test_bale_secret_reuse_disable_and_replacement(self):
+        root = self.write('dev')
+        old = '123456789:existingBaleTestToken'
+        (root / 'secrets/bale_bot_token').write_text(old)
+        (root / 'secrets/bale_webhook_secret').write_text('b' * 64)
+        with patch('manager.ask', side_effect=['enabled', 'health_test_bot', 'no']):
+            values, credentials = manager.bale_configuration(manager.load_env(root / 'runtime.env'), root)
+        self.assertEqual(credentials, {})
+        self.assertEqual(values['BALE_AUTH_ENABLED'], 'true')
+        self.assertEqual((root / 'secrets/bale_bot_token').read_text(), old)
+        with patch('manager.ask', return_value='disabled'):
+            disabled, credentials = manager.bale_configuration(values, root)
+        self.assertEqual(disabled['BALE_AUTH_ENABLED'], 'false')
+        self.assertEqual(credentials, {})
+        self.assertEqual((root / 'secrets/bale_webhook_secret').read_text(), 'b' * 64)
+
+    def test_bale_writes_secrets_before_enabling_and_never_saves_secret_state(self):
+        root = Path(self.config['environments']['dev']['home']) / 'mushroom/dev'
+        manager.write_environment(self.config, 'dev', base=root)
+        token = '123456789:syntheticBaleTestToken123'
+        with patch('manager.ask', side_effect=['enabled', 'health_test_bot', token]), \
+                patch('manager.os.chown', create=True), patch('manager.save') as save, \
+                redirect_stdout(io.StringIO()) as output:
+            manager.configure_bale(self.config, 'dev')
+        self.assertEqual(manager.load_env(root / 'runtime.env')['BALE_AUTH_ENABLED'], 'true')
+        self.assertEqual((root / 'secrets/bale_bot_token').read_text(), token)
+        self.assertTrue((root / 'secrets/bale_webhook_secret').is_file())
+        self.assertNotIn(token, (root / 'runtime.env').read_text())
+        self.assertNotIn(token, output.getvalue())
+        self.assertNotIn(token, json.dumps(save.call_args.args))
+        self.assertEqual((root / 'secrets/bale_bot_token').stat().st_mode & 0o777, 0o600)
+
+    def test_bale_rejects_invalid_secrets_symlinks_and_nondev_environment(self):
+        for environment in ('staging', 'production'):
+            with self.assertRaises(manager.InstallationError):
+                manager.configure_bale(self.config, environment)
+        root = self.write('dev')
+        with patch('manager.ask', side_effect=['enabled', 'health_test_bot', 'not-a-bale-token']):
+            with self.assertRaises(manager.InstallationError):
+                manager.bale_configuration(manager.load_env(root / 'runtime.env'), root)
+        if os.name == 'posix':
+            target = self.root / 'outside-bale-token'
+            target.write_text('unchanged')
+            (root / 'secrets/bale_bot_token').symlink_to(target)
+            with patch('manager.ask', side_effect=['enabled', 'health_test_bot']):
+                with self.assertRaises(manager.InstallationError):
+                    manager.bale_configuration(manager.load_env(root / 'runtime.env'), root)
+            self.assertEqual(target.read_text(), 'unchanged')
+
+    def test_bale_webhook_refuses_to_replace_unrelated_subscription(self):
+        root = Path(self.config['environments']['dev']['home']) / 'mushroom/dev'
+        manager.write_environment(self.config, 'dev', base=root)
+        values = manager.load_env(root / 'runtime.env')
+        values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME='health_test_bot')
+        manager.atomic_write(root / 'runtime.env', ''.join(f'{key}={value}\n' for key, value in values.items()))
+        manager.atomic_write(root / 'secrets/bale_bot_token', '123456789:syntheticBaleTestToken123')
+        manager.atomic_write(root / 'secrets/bale_webhook_secret', 'c' * 64)
+        with patch('manager.bale_bot_api', return_value={'url': 'https://unrelated.example.test/updates'}) as remote:
+            with self.assertRaisesRegex(manager.InstallationError, 'Existing Bale webhook'):
+                manager.register_bale_webhook(self.config, 'dev')
+        self.assertEqual(remote.call_count, 1)
+
+    def test_bale_webhook_registration_is_explicit_and_does_not_print_credentials(self):
+        root = Path(self.config['environments']['dev']['home']) / 'mushroom/dev'
+        manager.write_environment(self.config, 'dev', base=root)
+        values = manager.load_env(root / 'runtime.env')
+        values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME='health_test_bot')
+        manager.atomic_write(root / 'runtime.env', ''.join(f'{key}={value}\n' for key, value in values.items()))
+        manager.atomic_write(root / 'secrets/bale_bot_token', '123456789:syntheticBaleTestToken123')
+        manager.atomic_write(root / 'secrets/bale_webhook_secret', 'd' * 64)
+        expected = values['PUBLIC_API_URL'] + '/v1/integrations/bale/webhook/' + 'd' * 64
+        with patch('manager.bale_bot_api', side_effect=[{'url': ''}, True, {'url': expected}]) as remote, \
+                patch('manager.ask', return_value='yes'), redirect_stdout(io.StringIO()) as output:
+            manager.register_bale_webhook(self.config, 'dev')
+        self.assertEqual([call.args[1] for call in remote.call_args_list], ['getWebhookInfo', 'setWebhook', 'getWebhookInfo'])
+        self.assertEqual(remote.call_args_list[1].args[2], {'url': expected})
+        self.assertNotIn('d' * 64, output.getvalue())
+        self.assertNotIn('syntheticBaleTestToken123', output.getvalue())
+
+    def test_bale_doctor_accepts_disabled_or_complete_private_configuration(self):
+        root = self.write('dev')
+        values = manager.load_env(root / 'runtime.env')
+        manager.validate_bale_runtime(values, root, 'dev')
+        values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME='health_test_bot',
+                      BALE_BOT_TOKEN_FILE='/run/optional-secrets/bale_bot_token',
+                      BALE_WEBHOOK_SECRET_FILE='/run/optional-secrets/bale_webhook_secret')
+        manager.atomic_write(root / 'secrets/bale_bot_token', '123456789:syntheticBaleTestToken123')
+        manager.atomic_write(root / 'secrets/bale_webhook_secret', 'z' * 64)
+        manager.validate_bale_runtime(values, root, 'dev')
+        self.assertNotIn('syntheticBaleTestToken123', json.dumps(values))
+
+    def test_bale_doctor_rejects_malformed_or_unsafe_enabled_configuration(self):
+        root = self.write('dev')
+        values = manager.load_env(root / 'runtime.env')
+        values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME='health_test_bot',
+                      BALE_BOT_TOKEN_FILE='/run/optional-secrets/bale_bot_token',
+                      BALE_WEBHOOK_SECRET_FILE='/run/optional-secrets/bale_webhook_secret')
+        token = '123456789:syntheticBaleTestToken123'
+        manager.atomic_write(root / 'secrets/bale_bot_token', token)
+        manager.atomic_write(root / 'secrets/bale_webhook_secret', 's' * 64)
+        for key, bad_value in (
+            ('BALE_BOT_TOKEN_FILE', '/tmp/token'),
+            ('BALE_WEBHOOK_SECRET_FILE', '/tmp/webhook'),
+            ('APP_ORIGINS', 'https://unrelated.example.test'),
+            ('PUBLIC_API_URL', 'http://insecure.example.test'),
+            ('BALE_BOT_USERNAME', '../../unsafe'),
+        ):
+            with self.subTest(setting=key):
+                invalid = dict(values, **{key: bad_value})
+                with self.assertRaises(manager.InstallationError) as error:
+                    manager.validate_bale_runtime(invalid, root, 'dev')
+                self.assertNotIn(token, str(error.exception))
+        with self.assertRaises(manager.InstallationError):
+            manager.validate_bale_runtime(values, root, 'production')
+        (root / 'secrets/bale_bot_token').chmod(0o644)
+        with self.assertRaisesRegex(manager.InstallationError, '0600'):
+            manager.validate_bale_runtime(values, root, 'dev')
+        (root / 'secrets/bale_bot_token').chmod(0o600)
+        (root / 'secrets/bale_webhook_secret').unlink()
+        with self.assertRaisesRegex(manager.InstallationError, 'missing or unsafe'):
+            manager.validate_bale_runtime(values, root, 'dev')
+
     def test_storage_switch_requires_transfer_confirmation_before_any_write(self):
         root = self.write('dev')
         values = manager.load_env(root / 'runtime.env')
@@ -670,8 +810,12 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(len({action.key for action in menu}), len(menu))
         self.assertTrue(all(callable(action.handler) and action.label for action in menu))
         self.assertTrue(any(action.handler is manager.panel_storage for action in menu))
+        self.assertTrue(any(action.handler is manager.panel_bale for action in menu))
+        self.assertTrue(any(action.handler is manager.panel_bale_webhook and action.destructive for action in menu))
         production_only = {'environments': {'production': self.config['environments']['production']}}
         self.assertFalse(any(action.handler is manager.panel_storage
+                             for action in manager.panel_menu(production_only)))
+        self.assertFalse(any(action.handler in (manager.panel_bale, manager.panel_bale_webhook)
                              for action in manager.panel_menu(production_only)))
 
     def test_panel_dispatches_only_listed_actions_and_writes_audit_log(self):
