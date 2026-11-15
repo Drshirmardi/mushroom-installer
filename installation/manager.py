@@ -1260,10 +1260,12 @@ def panel_analytics(config, environment=None):
 
 
 def panel_bale(config, environment=None):
+    require(environment == 'dev', 'Bale setup is available only in Dev.')
     setup_bale(config)
 
 
 def panel_bale_webhook(config, environment=None):
+    require(environment == 'dev', 'Bale webhook registration is available only in Dev.')
     setup_bale_webhook(config)
 
 
@@ -1298,8 +1300,8 @@ def panel_menu(config):
         PanelAction('10', 'Re-apply proxy/TLS configuration', panel_proxy, False, True),
         PanelAction('11', 'Resume full installation', panel_install, False, True),
         PanelAction('12', 'Configure dev analytics (hidden API secret)', panel_analytics),
-        PanelAction('13', 'Configure Dev Bale Mini App (private bot token)', panel_bale),
-        PanelAction('14', 'Register Dev Bale webhook (after deployment)', panel_bale_webhook, False, True),
+        PanelAction('13', 'Configure Dev Bale Mini App (private bot token)', panel_bale, True),
+        PanelAction('14', 'Register Dev Bale webhook (after deployment)', panel_bale_webhook, True, True),
     ]
     if 'dev' not in config['environments']:
         actions = [action for action in actions if action.handler not in (panel_storage, panel_analytics, panel_bale, panel_bale_webhook)]
