@@ -190,7 +190,7 @@ class InstallationTests(unittest.TestCase):
         manager.write_environment(self.config, 'dev', base=root)
         values = manager.load_env(root / 'runtime.env')
         values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME='health_test_bot')
-        manager.atomic_write(root / 'runtime.env', ''.join(f'{key}={value}\\n' for key, value in values.items()))
+        manager.atomic_write(root / 'runtime.env', ''.join(f'{key}={value}\n' for key, value in values.items()))
         manager.atomic_write(root / 'secrets/bale_bot_token', '123456789:syntheticBaleTestToken123')
         manager.atomic_write(root / 'secrets/bale_webhook_secret', 'c' * 64)
         with patch('manager.bale_bot_api', return_value={'url': 'https://unrelated.example.test/updates'}) as remote:
@@ -203,7 +203,7 @@ class InstallationTests(unittest.TestCase):
         manager.write_environment(self.config, 'dev', base=root)
         values = manager.load_env(root / 'runtime.env')
         values.update(BALE_AUTH_ENABLED='true', BALE_BOT_USERNAME='health_test_bot')
-        manager.atomic_write(root / 'runtime.env', ''.join(f'{key}={value}\\n' for key, value in values.items()))
+        manager.atomic_write(root / 'runtime.env', ''.join(f'{key}={value}\n' for key, value in values.items()))
         manager.atomic_write(root / 'secrets/bale_bot_token', '123456789:syntheticBaleTestToken123')
         manager.atomic_write(root / 'secrets/bale_webhook_secret', 'd' * 64)
         expected = values['PUBLIC_API_URL'] + '/v1/integrations/bale/webhook/' + 'd' * 64
@@ -767,8 +767,12 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(len({action.key for action in menu}), len(menu))
         self.assertTrue(all(callable(action.handler) and action.label for action in menu))
         self.assertTrue(any(action.handler is manager.panel_storage for action in menu))
+        self.assertTrue(any(action.handler is manager.panel_bale for action in menu))
+        self.assertTrue(any(action.handler is manager.panel_bale_webhook and action.destructive for action in menu))
         production_only = {'environments': {'production': self.config['environments']['production']}}
         self.assertFalse(any(action.handler is manager.panel_storage
+                             for action in manager.panel_menu(production_only)))
+        self.assertFalse(any(action.handler in (manager.panel_bale, manager.panel_bale_webhook)
                              for action in manager.panel_menu(production_only)))
 
     def test_panel_dispatches_only_listed_actions_and_writes_audit_log(self):
