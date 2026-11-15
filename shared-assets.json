@@ -1,8 +1,8 @@
 {
   "upstreamRepository": "Drshirmardi/mushroom",
-  "upstreamCommit": "52a3c098688ed0ed66a95d0821939a300e394806",
+  "upstreamCommit": "adbb43046e4e1b9514db9bb07878bc34d9b9f1b4",
   "files": {
-    "deploy/vps/dev-env.example": "dff03b388e8372d95bc25e1140e372cfb120acc33e0b2b16d1b402b168bd2ca8",
+    "deploy/vps/dev-env.example": "d12a8d3f4c4dc91d40571cd8ceb974d3ddc68e7f1317204f4d3027f9f15b3f1a",
     "deploy/vps/env.example": "ac82400d282d06f83342e7f9f88e9ce0a30b8f448b50885187d49b7811f50c95",
     "deploy/vps/production-env.example": "f1c7735d185bbd56c5cc547903a1680a262b3f27ed224a3cf48dd6f93a440408",
     "deploy/vps/analytics.dev.env.example": "69a46c6353cae3f21a5cd418698d84e5688a64485e1be33b3fd4e8463ce638b0",
