@@ -1135,6 +1135,17 @@ def setup_storage(config):
     configure_storage(config, 'dev')
 
 
+def setup_bale(config):
+    require('dev' in config['environments'], 'Bale setup requires an installed Dev environment.')
+    persist_bundle()
+    configure_bale(config, 'dev')
+
+
+def setup_bale_webhook(config):
+    require('dev' in config['environments'], 'Bale webhook registration needs Dev.')
+    register_bale_webhook(config, 'dev')
+
+
 def setup_analytics(config):
     require('dev' in config['environments'], 'Analytics setup needs an installed dev environment.')
     persist_bundle()
@@ -1175,7 +1186,8 @@ def environment_state(config, environment):
     return {'prepared': prepared, 'deployed': (root / 'state/current').is_file(),
             'chat': (root / 'state/chat.initialized').is_file(),
             'firstAdmin': (root / 'bootstrap/first-run.json').is_file(),
-            'media': values.get('PRODUCT_MEDIA_STORAGE_MODE', 'disabled') if prepared else 'unknown'}
+            'media': values.get('PRODUCT_MEDIA_STORAGE_MODE', 'disabled') if prepared else 'unknown',
+            'bale': 'enabled' if prepared and values.get('BALE_AUTH_ENABLED') == 'true' else 'disabled'}
 
 
 def render_panel(config, actions, note=None):
@@ -1191,6 +1203,7 @@ def render_panel(config, actions, note=None):
             ('first-admin-pending', state['firstAdmin']),
             ('backup', bool((config['environments'][environment] or {}).get('backupEnabled')))) if active]
         flags.append('media=' + str(state['media']))
+        flags.append('bale=' + str(state['bale']))
         lines.append(f'  {environment:<12} ' + ' '.join(flags))
     lines.append('')
     lines.extend('  [' + action.key + '] ' + action.label
@@ -1246,6 +1259,14 @@ def panel_analytics(config, environment=None):
     setup_analytics(config)
 
 
+def panel_bale(config, environment=None):
+    setup_bale(config)
+
+
+def panel_bale_webhook(config, environment=None):
+    setup_bale_webhook(config)
+
+
 def panel_backup(config, environment=None):
     backup(config, environment)
 
@@ -1277,9 +1298,11 @@ def panel_menu(config):
         PanelAction('10', 'Re-apply proxy/TLS configuration', panel_proxy, False, True),
         PanelAction('11', 'Resume full installation', panel_install, False, True),
         PanelAction('12', 'Configure dev analytics (hidden API secret)', panel_analytics),
+        PanelAction('13', 'Configure Dev Bale Mini App (private bot token)', panel_bale),
+        PanelAction('14', 'Register Dev Bale webhook (after deployment)', panel_bale_webhook, False, True),
     ]
     if 'dev' not in config['environments']:
-        actions = [action for action in actions if action.handler not in (panel_storage, panel_analytics)]
+        actions = [action for action in actions if action.handler not in (panel_storage, panel_analytics, panel_bale, panel_bale_webhook)]
     return actions
 
 
@@ -1598,7 +1621,7 @@ def lock():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', choices=['install', 'panel', 'update', 'setup-chat', 'setup-storage', 'setup-analytics', 'configure', 'doctor', 'verify', 'github', 'status', 'logs', 'restart', 'backup', 'restore', 'audit-env'])
+    parser.add_argument('command', nargs='?', choices=['install', 'panel', 'update', 'setup-chat', 'setup-storage', 'setup-analytics', 'setup-bale', 'register-bale-webhook', 'configure', 'doctor', 'verify', 'github', 'status', 'logs', 'restart', 'backup', 'restore', 'audit-env'])
     parser.add_argument('--version', nargs='?', const='__current__', help='Print tool version, or select a release for update')
     parser.add_argument('--check', action='store_true', help='Only check for an installer update')
     parser.add_argument('--yes', action='store_true', help='Confirm an explicitly requested unattended downgrade')
@@ -1649,6 +1672,12 @@ def main():
         elif args.command == 'setup-analytics':
             require(args.environment == 'dev', 'Use setup-analytics --environment dev; Production stays unchanged.')
             setup_analytics(config)
+        elif args.command == 'setup-bale':
+            require(args.environment == 'dev', 'Use setup-bale --environment dev.')
+            setup_bale(config)
+        elif args.command == 'register-bale-webhook':
+            require(args.environment == 'dev', 'Use register-bale-webhook --environment dev.')
+            setup_bale_webhook(config)
         elif args.command == 'configure':
             configure(config, args.environment)
         elif args.command in ('doctor', 'verify'):
