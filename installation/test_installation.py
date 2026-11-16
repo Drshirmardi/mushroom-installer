@@ -803,6 +803,11 @@ class InstallationTests(unittest.TestCase):
         self.assertIn('prepared', text)
         self.assertIn('[q] quit', text)
         self.assertIn('Doctor checks', text)
+        self.assertIn('╔', text)
+        self.assertIn('ENVIRONMENT', text)
+        self.assertIn('OPERATIONS', text)
+        self.assertIn('CONFIGURATION & DEPLOYMENT', text)
+        self.assertIn('* Requires typed confirmation', text)
         self.assertNotIn(secret, text)
 
     def test_panel_menu_keys_are_unique_and_storage_needs_dev(self):
@@ -851,6 +856,24 @@ class InstallationTests(unittest.TestCase):
         self.assertIsNone(manager.choose_environment(self.config, lambda prompt: ''))
         with self.assertRaises(manager.InstallationError):
             manager.choose_environment(self.config, lambda prompt: 'dev; rm -rf /')
+
+    def test_log_menu_selects_live_service_and_returns_after_interrupt(self):
+        answers = iter(['2', '1', '0'])
+        calls = []
+        def execute(args, **kwargs):
+            calls.append(args)
+            if kwargs.get('capture'):
+                return 'api\nweb\n'
+            raise KeyboardInterrupt
+        with patch.object(manager, 'compose_command', return_value=['docker']), patch.object(manager, 'run', side_effect=execute):
+            manager.panel_logs(self.config, 'dev', reader=lambda _: next(answers), emit=lambda _: None)
+        self.assertEqual(calls[1], ['docker', 'logs', '--tail', '100', '--follow', 'api'])
+
+    def test_log_menu_recent_all_services(self):
+        answers = iter(['1', '2', '', '0'])
+        with patch.object(manager, 'compose_command', return_value=['docker']), patch.object(manager, 'run', side_effect=['api\nweb\n', '']) as run:
+            manager.panel_logs(self.config, 'dev', reader=lambda _: next(answers), emit=lambda _: None)
+        self.assertEqual(run.call_args_list[1].args[0], ['docker', 'logs', '--tail', '100'])
 
     def test_panel_exits_cleanly_on_end_of_input(self):
         def reader(prompt):
