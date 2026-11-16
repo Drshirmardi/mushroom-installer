@@ -863,7 +863,9 @@ class InstallationTests(unittest.TestCase):
         compose.parent.mkdir(parents=True)
         compose.touch()
         command = manager.compose_command(self.config, 'dev')
-        self.assertEqual(command[:7], ['runuser', '-u', 'mushroom-deploy', '--', 'env',
+        self.assertEqual(command[:12], ['runuser', '-u', 'mushroom-deploy', '--', 'sh', '-c',
+                                       'cd "$1" || exit 1; shift; exec "$@"', 'mushroom-compose',
+                                       self.config['environments']['dev']['home'], 'env',
                                        f"HOME={self.config['environments']['dev']['home']}",
                                        'USER=mushroom-deploy'])
         self.assertIn('LOGNAME=mushroom-deploy', command)

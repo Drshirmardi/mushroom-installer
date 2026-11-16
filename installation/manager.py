@@ -1477,7 +1477,8 @@ def compose_command(config, environment):
         require(release.is_relative_to((root / 'releases').resolve()), 'Release state points outside this environment.')
         compose, env = release / 'compose.yaml', release / 'release.env'
     require(compose.is_file(), f'{environment}: awaiting first GitHub deployment.')
-    args = ['runuser', '-u', spec['user'], '--', 'env',
+    args = ['runuser', '-u', spec['user'], '--', 'sh', '-c',
+            'cd "$1" || exit 1; shift; exec "$@"', 'mushroom-compose', spec['home'], 'env',
             f"HOME={spec['home']}", f"USER={spec['user']}", f"LOGNAME={spec['user']}",
             'docker', 'compose', '--project-name', f'mushroom-{environment}',
             '--env-file', env, '--file', compose]
