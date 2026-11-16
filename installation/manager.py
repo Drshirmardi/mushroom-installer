@@ -1221,9 +1221,9 @@ def environment_state(config, environment):
 def render_panel(config, actions, note=None):
     """Pure rendering: state comes from files, never from secret values."""
     steps = config.get('steps') or {}
-    lines = [f'Mushroom panel - {config.get("domain", "unconfigured host")}',
-             'server ready: ' + ('yes' if steps.get('serverReady') else 'no')
-             + '   host packages: ' + ('yes' if steps.get('packages') else 'no'), '']
+    title = f'Mushroom Panel - {config.get("domain", "unconfigured host")}'
+    status = ['Server ready: ' + ('Yes' if steps.get('serverReady') else 'No'),
+              'Host packages: ' + ('Yes' if steps.get('packages') else 'No')]
     for environment in config['environments']:
         state = environment_state(config, environment)
         flags = [name for name, active in (
@@ -1232,21 +1232,50 @@ def render_panel(config, actions, note=None):
             ('backup', bool((config['environments'][environment] or {}).get('backupEnabled')))) if active]
         flags.append('media=' + str(state['media']))
         flags.append('bale=' + str(state['bale']))
-        lines.append(f'  {environment:<12} ' + ' '.join(flags))
-    lines.append('')
-    lines.extend('  [' + action.key + '] ' + action.label
-                 + ('  (typed confirmation)' if action.destructive else '') for action in actions)
-    lines.append('  [q] quit')
+        status.append(f'{environment}: ' + ' | '.join(flags))
+
+    sections = [('STATUS', status)]
+    groups = {'ENVIRONMENT': {'1', '2', '3'},
+              'OPERATIONS': {'4', '5', '8', '9', '10', '11'},
+              'CONFIGURATION & DEPLOYMENT': {'6', '7', '12', '13', '14'}}
+    grouped = tuple((name, [action for action in actions if str(action.key) in keys])
+                    for name, keys in groups.items())
+    known = set().union(*groups.values())
+    grouped += (('OTHER', [action for action in actions if str(action.key) not in known]),)
+    sections.extend((name, ['[' + action.key + '] ' + action.label
+                            + ('  *' if action.destructive else '') for action in items])
+                    for name, items in grouped if items)
+    sections.append(('EXIT', ['[q] quit']))
+    content_width = max(56, len(title), *(len(row) for _, items in sections for row in items),
+                        *(len(name) for name, _ in sections))
+    border_top = '╔' + '═' * (content_width + 4) + '╗'
+    divider = '╟' + '─' * (content_width + 4) + '╢'
+    lines = [border_top, '║  ' + title.ljust(content_width) + '  ║', divider]
+    for index, (heading, items) in enumerate(sections):
+        lines.append('║  ' + heading.ljust(content_width) + '  ║')
+        lines.extend('║  ' + row.ljust(content_width) + '  ║' for row in items)
+        if index < len(sections) - 1:
+            lines.append(divider)
+    lines.append('╚' + '═' * (content_width + 4) + '╝')
+    if any(action.destructive for action in actions):
+        lines.extend(['', '* Requires typed confirmation'])
     if note:
-        lines.extend(['', '* ' + str(note)])
+        lines.extend(['', '! ' + str(note)])
     return '\n'.join(lines) + '\n'
 
 
 def choose_environment(config, reader):
     names = list(config['environments'])
-    answer = reader('Environment (' + '/'.join(names) + '): ').strip().lower()
-    if not answer:
+    if len(names) == 1:
+        return names[0]
+    print('\nEnvironment:')
+    for index, name in enumerate(names, 1):
+        print(f'  [{index}] {name}')
+    answer = reader('Choose an environment [0 = back]: ').strip().lower()
+    if answer in ('', '0', 'q'):
         return None
+    if answer.isdecimal() and 1 <= int(answer) <= len(names):
+        return names[int(answer) - 1]
     require(answer in names, 'Unknown environment: ' + answer)
     return answer
 
@@ -1259,8 +1288,37 @@ def panel_status(config, environment=None):
     run(compose_command(config, environment) + ['ps'])
 
 
-def panel_logs(config, environment=None):
-    run(compose_command(config, environment) + ['logs', '--tail', '100'])
+def panel_logs(config, environment=None, *, reader=None, emit=print):
+    reader = reader or terminal_input
+    command = compose_command(config, environment)
+    services = run(command + ['config', '--services'], capture=True).splitlines()
+    require(services, f'{environment}: no services configured.')
+    while True:
+        emit('\nLogs for ' + environment + ':\n  [0] Back\n  [1] All services')
+        for index, service in enumerate(services, 2):
+            emit(f'  [{index}] {service}')
+        choice = reader('Choose a service: ').strip()
+        if choice in ('', '0', 'q'):
+            return
+        if not choice.isdecimal() or not 1 <= int(choice) <= len(services) + 1:
+            emit('Unknown selection. Please try again.')
+            continue
+        selected = [] if choice == '1' else [services[int(choice) - 2]]
+        mode = reader('  [1] Live logs  [2] Recent logs  [0] Back: ').strip()
+        if mode in ('', '0', 'q'):
+            continue
+        if mode not in ('1', '2'):
+            emit('Unknown selection. Please try again.')
+            continue
+        emit('\nShowing logs' + (' (Ctrl+C to return)' if mode == '1' else '') + ':\n')
+        try:
+            run(command + ['logs', '--tail', '100'] + (['--follow'] if mode == '1' else []) + selected)
+        except KeyboardInterrupt:
+            emit('\nLive logs stopped.')
+        except InstallationError as error:
+            emit(f'Unable to show logs: {error}')
+        if mode == '2':
+            reader('\nPress Enter to return to logs menu: ')
 
 
 def panel_doctor(config, environment=None):
@@ -1317,7 +1375,7 @@ def panel_menu(config):
     """Every entry calls an existing operation; the panel adds no new behaviour."""
     actions = [
         PanelAction('1', 'Environment status (docker compose ps)', panel_status, True),
-        PanelAction('2', 'Recent container logs', panel_logs, True),
+        PanelAction('2', 'Logs management', panel_logs, True),
         PanelAction('3', 'Doctor checks (DNS/TLS/secrets/deployment)', panel_doctor),
         PanelAction('4', 'Restart environment', panel_restart, True, True),
         PanelAction('5', 'Prepare chat engine and proxy', panel_chat, True, True),
@@ -1373,13 +1431,24 @@ def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print):
             continue
         panel_audit(action.key, environment)
         try:
-            action.handler(config, environment)
-        except InstallationError as error:
+            emit('\n--- ' + action.label + ' ---')
+            if action.handler is panel_logs:
+                panel_logs(config, environment, reader=reader, emit=emit)
+            else:
+                action.handler(config, environment)
+        except (InstallationError, OSError) as error:
             note = f'{action.label} failed: {error}'
+        except EOFError:
+            return
         except KeyboardInterrupt:
             note = 'Cancelled.'
         else:
             note = None
+        if action.handler is not panel_logs and reader is terminal_input:
+            try:
+                reader('\nPress Enter to return to the main menu: ')
+            except EOFError:
+                return
 
 
 def panel(config):
