@@ -1477,7 +1477,9 @@ def compose_command(config, environment):
         require(release.is_relative_to((root / 'releases').resolve()), 'Release state points outside this environment.')
         compose, env = release / 'compose.yaml', release / 'release.env'
     require(compose.is_file(), f'{environment}: awaiting first GitHub deployment.')
-    args = ['runuser', '-u', spec['user'], '--', 'docker', 'compose', '--project-name', f'mushroom-{environment}',
+    args = ['runuser', '-u', spec['user'], '--', 'env',
+            f"HOME={spec['home']}", f"USER={spec['user']}", f"LOGNAME={spec['user']}",
+            'docker', 'compose', '--project-name', f'mushroom-{environment}',
             '--env-file', env, '--file', compose]
     if (root / 'network.yaml').exists():
         args.extend(['--file', root / 'network.yaml'])

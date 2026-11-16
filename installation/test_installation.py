@@ -857,6 +857,17 @@ class InstallationTests(unittest.TestCase):
         with self.assertRaises(manager.InstallationError):
             manager.choose_environment(self.config, lambda prompt: 'dev; rm -rf /')
 
+    def test_compose_command_uses_selected_users_home(self):
+        compose = (Path(self.config['environments']['dev']['home']) /
+                   'mushroom/dev/workspace/deploy/vps/compose.dev.yaml')
+        compose.parent.mkdir(parents=True)
+        compose.touch()
+        command = manager.compose_command(self.config, 'dev')
+        self.assertEqual(command[:7], ['runuser', '-u', 'mushroom-deploy', '--', 'env',
+                                       f"HOME={self.config['environments']['dev']['home']}",
+                                       'USER=mushroom-deploy'])
+        self.assertIn('LOGNAME=mushroom-deploy', command)
+
     def test_log_menu_selects_live_service_and_returns_after_interrupt(self):
         answers = iter(['2', '1', '0'])
         calls = []
