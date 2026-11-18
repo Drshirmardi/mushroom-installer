@@ -1307,10 +1307,14 @@ def render_panel(config, actions, note=None):
     groups = {'ENVIRONMENT': {'1', '2', '3'},
               'OPERATIONS': {'4', '5', '8', '9', '10', '11', '16', '17', '19', '21', '22'},
               'CONFIGURATION & DEPLOYMENT': {'6', '7', '12', '13', '14', '15', '18', '20'}}
-    grouped = tuple((name, [action for action in actions if str(action.key) in keys])
+    grouped = tuple((name, sorted(
+        (action for action in actions if str(action.key) in keys),
+        key=lambda action: int(action.key) if action.key.isdecimal() else float('inf')))
                     for name, keys in groups.items())
     known = set().union(*groups.values())
-    grouped += (('OTHER', [action for action in actions if str(action.key) not in known]),)
+    grouped += (('OTHER', sorted(
+        (action for action in actions if str(action.key) not in known),
+        key=lambda action: int(action.key) if action.key.isdecimal() else float('inf'))),)
     sections.extend((name, ['[' + action.key + '] ' + action.label
                             + ('  *' if action.destructive else '') for action in items])
                     for name, items in grouped if items)

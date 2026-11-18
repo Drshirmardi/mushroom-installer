@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -847,6 +848,9 @@ class InstallationTests(unittest.TestCase):
         self.assertIn('CONFIGURATION & DEPLOYMENT', text)
         self.assertIn('* Requires typed confirmation', text)
         self.assertNotIn(secret, text)
+        operations = text.split('OPERATIONS', 1)[1].split('CONFIGURATION & DEPLOYMENT', 1)[0]
+        visible_keys = [int(value) for value in re.findall(r'\[(\d+)\]', operations)]
+        self.assertEqual(visible_keys, sorted(visible_keys))
 
     def test_panel_menu_keys_are_unique_and_storage_needs_dev(self):
         menu = manager.panel_menu(self.config)
