@@ -686,6 +686,44 @@ class InstallationTests(unittest.TestCase):
         root = self.write('dev')
         self.assertEqual(manager.load_env(root / 'runtime.env')['API_PORT'], '127.0.0.1:3403')
 
+    @unittest.skipIf(os.name == 'nt', 'requires Linux file ownership')
+    def test_failed_database_switch_restores_old_connection(self):
+        environment = 'staging'
+        self.config['environments'][environment]['home'] = str(self.root)
+        root = self.root / 'mushroom/staging'
+        state = root / 'state'
+        state.mkdir(parents=True)
+        (state / 'deploy.lock').touch()
+        (state / 'recovery-lock-compatible').touch()
+        source = root / 'secrets/database_url'
+        manager.atomic_write(source, 'postgresql://app:fixture@postgres/mushroom_staging')
+        private = self.root / 'private'
+        private.mkdir()
+        maintenance = state / 'database-maintenance'
+        calls = []
+
+        def compose_run(command, **kwargs):
+            calls.append(command)
+            if 'up' in command:
+                self.assertTrue(maintenance.exists())
+                self.assertIn('/mushroom_staging', source.read_text())
+                self.assertNotIn('_restore_test', source.read_text())
+
+        with patch.object(manager, 'STATE', private), \
+             patch.object(manager, 'compose_command', return_value=['compose']), \
+             patch.object(manager, 'configure_proxy'), \
+             patch.object(manager, 'run', side_effect=compose_run), \
+             patch.object(manager, 'check_recovery_schema',
+                          side_effect=manager.InstallationError('migration mismatch')):
+            manager.atomic_write(manager.recovery_record(environment, 'candidate'),
+                                 'postgresql://app:fixture@postgres/mushroom_staging_restore_test')
+            with self.assertRaisesRegex(manager.InstallationError, 'migration mismatch'):
+                manager.activate_application_recovery(self.config, environment, 'candidate')
+            self.assertFalse(manager.recovery_record(environment, 'in-progress').exists())
+        self.assertFalse(maintenance.exists())
+        self.assertEqual(calls[0], ['compose', 'stop', 'api'])
+        self.assertTrue(source.read_text().endswith('/mushroom_staging'))
+
     def test_failed_backup_never_records_success_or_leaves_plaintext(self):
         import contextlib
         state = self.root / 'state'

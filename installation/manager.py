@@ -2,12 +2,15 @@
 """Server preparation and operations. Python standard library only; Ubuntu 24.04."""
 import argparse
 import base64
+import configparser
+import stat
 from collections import namedtuple
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import getpass
 import hashlib
 import ipaddress
+import io
 import json
 import os
 from pathlib import Path
@@ -22,7 +25,7 @@ import tempfile
 import time
 import unicodedata
 import updater
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from urllib.request import Request, urlopen
 
 BUNDLE = Path(__file__).resolve().parent.parent
@@ -532,30 +535,49 @@ def new_configuration():
     config['productionAutoDeploy'] = (ask('Production updates after successful staging', 'manual',
                                            lambda v: choice(v, ['manual', 'automatic'])) == 'automatic') if 'production' in environments else False
     for environment in environments:
-        prefix = '' if environment == 'production' else f'{environment}-'
-        web = domain if environment == 'production' else f'{environment}.{domain}'
-        domains = {name: ask(f'{environment} {name} hostname', default, hostname)
-                   for name, default in [('web', web), ('app', f'{prefix}app.{domain}'),
-                                         ('dashboard', f'{prefix}dashboard.{domain}'), ('api', f'{prefix}api.{domain}')]}
-        user = 'mushroom-prod' if environment == 'production' else 'mushroom-deploy'
-        sms = ask(f'{environment} SMS runtime (provider credentials are configured later in Dashboard)', 'disabled',
-                  lambda v: choice(v, ['disabled', 'live']))
-        payment = ask(f'{environment} Sadad runtime (live requires registered callback/static outbound IP)', 'disabled',
-                      lambda v: choice(v, ['disabled', 'live']))
-        runtime = {'SMS_TRANSPORT_MODE': sms, 'SADAD_TRANSPORT_MODE': payment}
-        if payment == 'live':
-            runtime['SADAD_REDIRECT_PROFILE'] = ask('Merchant-approved Sadad redirect profile', validator=lambda v: choice(v, [
-                'PDF_PURCHASE', 'PHP_VPG_PURCHASE', 'DOTNET_PURCHASE_INDEX']))
-        backup = ask(f'{environment} enable daily encrypted local backup', 'yes', lambda v: choice(v, ['yes', 'no']))
-        retention = ask('Keep local encrypted backups for how many days (7..365)', '14',
-                        lambda v: int(v) if 7 <= int(v) <= 365 else choice(v, [])) if backup == 'yes' else 14
-        pg_major = ask('PostgreSQL server major version (backup client must match)', '16',
-                       lambda v: v if re.fullmatch(r'1[6-9]|[2-9][0-9]', v) else choice(v, [])) if environment == 'production' else '16'
-        config['environments'][environment] = {'domains': domains, 'user': user, 'home': f'/home/{user}',
-                                               'runtime': runtime, 'backupEnabled': backup == 'yes', 'pgMajor': pg_major,
-                                               'backupRetentionDays': retention}
-    require(len({d for e in config['environments'].values() for d in e['domains'].values()}) == 4 * len(environments), 'Environment hostnames must all be distinct.')
+        config['environments'][environment] = environment_configuration(domain, environment)
+    check_unique_domains(config)
     return config
+
+
+def check_unique_domains(config):
+    domains = [domain for spec in config['environments'].values() for domain in spec['domains'].values()]
+    require(len(domains) == len(set(domains)), 'Environment hostnames must all be distinct.')
+
+
+def environment_configuration(domain, environment):
+    prefix = '' if environment == 'production' else f'{environment}-'
+    web = domain if environment == 'production' else f'{environment}.{domain}'
+    domains = {name: ask(f'{environment} {name} hostname', default, hostname)
+               for name, default in [('web', web), ('app', f'{prefix}app.{domain}'),
+                                     ('dashboard', f'{prefix}dashboard.{domain}'), ('api', f'{prefix}api.{domain}')]}
+    user = 'mushroom-prod' if environment == 'production' else 'mushroom-deploy'
+    sms = ask(f'{environment} SMS runtime (provider credentials are configured later in Dashboard)', 'disabled',
+              lambda v: choice(v, ['disabled', 'live']))
+    payment = ask(f'{environment} Sadad runtime (live requires registered callback/static outbound IP)', 'disabled',
+                  lambda v: choice(v, ['disabled', 'live']))
+    runtime = {'SMS_TRANSPORT_MODE': sms, 'SADAD_TRANSPORT_MODE': payment}
+    if payment == 'live':
+        runtime['SADAD_REDIRECT_PROFILE'] = ask('Merchant-approved Sadad redirect profile', validator=lambda v: choice(v, [
+            'PDF_PURCHASE', 'PHP_VPG_PURCHASE', 'DOTNET_PURCHASE_INDEX']))
+    backup = ask(f'{environment} enable daily encrypted local backup', 'yes', lambda v: choice(v, ['yes', 'no']))
+    retention = ask('Keep local encrypted backups for how many days (7..365)', '14',
+                    lambda v: int(v) if 7 <= int(v) <= 365 else choice(v, [])) if backup == 'yes' else 14
+    pg_major = ask('PostgreSQL server major version (backup client must match)', '16',
+                   lambda v: v if re.fullmatch(r'1[6-9]|[2-9][0-9]', v) else choice(v, [])) if environment == 'production' else '16'
+    result = {'domains': domains, 'user': user, 'home': f'/home/{user}',
+                                           'runtime': runtime, 'backupEnabled': backup == 'yes', 'pgMajor': pg_major,
+                                           'backupRetentionDays': retention}
+    if environment == 'production':
+        result['postgresMode'] = ask('Production PostgreSQL (external / local)', 'external',
+                                     lambda value: choice(value, ('external', 'local')))
+        if result['postgresMode'] == 'local':
+            result['pgMajor'] = '16'
+    return result
+
+
+def local_database(config, environment):
+    return environment != 'production' or config['environments'][environment].get('postgresMode') == 'local'
 
 
 def write_environment(config, environment, *, base=None, owner=None, first_run=None, db_url=None, policy=None):
@@ -567,7 +589,8 @@ def write_environment(config, environment, *, base=None, owner=None, first_run=N
     require(not secret_dir.is_symlink() and not (root / 'bootstrap').is_symlink(), 'Environment directories cannot be symlinks.')
     secret_dir.mkdir(exist_ok=True, mode=0o700)
     (root / 'bootstrap').mkdir(exist_ok=True, mode=0o700)
-    required_names = SECRET_NAMES + (() if environment == 'production' else ('postgres_password',))
+    managed = local_database(config, environment)
+    required_names = SECRET_NAMES + (('postgres_password',) if managed else ())
     established = any(path.exists() for path in (secret_dir / '.initialized', root / 'state/current', root / 'bootstrap/complete'))
     if established:
         require(all((secret_dir / name).is_file() and not (secret_dir / name).is_symlink() for name in required_names),
@@ -588,9 +611,9 @@ def write_environment(config, environment, *, base=None, owner=None, first_run=N
     values['APP_ORIGINS'] = ','.join(values[f'PUBLIC_{name}_URL'] for name in ('WEB', 'APP', 'DASHBOARD'))
     values['SADAD_RETURN_URL'] = values['PUBLIC_API_URL'] + '/v1/payments/providers/sadad/callback'
     values['SADAD_RESULT_URL'] = values['PUBLIC_APP_URL'] + '/store/order-success'
-    if environment != 'production':
+    if managed:
         values.update({'POSTGRES_DB': 'mushroom_' + environment.replace('-', '_'),
-                       'POSTGRES_USER': 'mushroom_' + environment.replace('-', '_'), 'POSTGRES_IMAGE': 'postgres:16-alpine'})
+                       'POSTGRES_USER': 'mushroom_' + environment.replace('-', '_'), 'POSTGRES_IMAGE': f"postgres:{spec.get('pgMajor', '16')}-alpine"})
     if environment == 'dev':
         for unsupported in ('DEV_WEB_MEMORY', 'DEV_APP_MEMORY', 'DEV_DASHBOARD_MEMORY'):
             values.pop(unsupported, None)
@@ -608,7 +631,7 @@ def write_environment(config, environment, *, base=None, owner=None, first_run=N
     for kind in ('sms', 'payment'):
         generated[f'{kind}_credential_encryption_key'] = base64.b64encode(secrets.token_bytes(32)).decode()
         generated[f'{kind}_credential_decryption_keys'] = ''
-    if environment != 'production':
+    if managed:
         password_path = secret_dir / 'postgres_password'
         generated['postgres_password'] = password_path.read_text().strip() if password_path.exists() else secrets.token_hex(32)
         generated['database_url'] = f'postgresql://{values["POSTGRES_USER"]}:{generated["postgres_password"]}@postgres:5432/{values["POSTGRES_DB"]}?schema=public'
@@ -632,7 +655,40 @@ def write_environment(config, environment, *, base=None, owner=None, first_run=N
                      *[root / name for name in ('workspace', 'cache', 'state', 'bootstrap', 'bootstrap/first-run.json', 'consent-policy.json') if (root / name).exists()]]:
             require(not path.is_symlink(), f'Refusing symlink: {path}')
             os.chown(path, *owner)
+    if environment == 'production' and managed:
+        overlay = root / 'postgres.compose.yaml'
+        atomic_write(overlay, PRODUCTION_POSTGRES)
+        if owner:
+            os.chown(overlay, *owner)
     return root
+
+
+PRODUCTION_POSTGRES = """services:
+  postgres:
+    image: "${POSTGRES_IMAGE:?set PostgreSQL image}"
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:?set database name}"
+      POSTGRES_USER: "${POSTGRES_USER:?set database user}"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  api:
+    depends_on:
+      postgres:
+        condition: service_healthy
+volumes:
+  postgres_data:
+secrets:
+  postgres_password:
+    file: "${MUSHROOM_ENV_ROOT:?set environment root}/secrets/postgres_password"
+"""
+
 
 
 def install_packages():
@@ -766,9 +822,11 @@ def allocate_ports(config):
     save(config)
 
 
-def check_dns(config):
+def check_dns(config, selected=None):
     missing = []
-    for spec in config['environments'].values():
+    for environment, spec in config['environments'].items():
+        if selected and environment != selected:
+            continue
         for domain in spec['domains'].values():
             try:
                 records = socket.getaddrinfo(domain, 443, type=socket.SOCK_STREAM)
@@ -959,7 +1017,10 @@ def configure_proxy(config, directory=None):
         for service, domain in spec['domains'].items():
             offset = {'web': 0, 'app': 1, 'dashboard': 2, 'api': 3}[service]
             chat_import = f'  import {directory}/mushroom-chat/{environment}/*.caddy\n' if service == 'api' else ''
-            sites.append(f'{domain} {{\n  tls {config["email"]}\n  encode zstd gzip\n{chat_import}  reverse_proxy 127.0.0.1:{spec.get("basePort", PORTS[environment]) + offset}\n}}\n')
+            if service == 'api' and (root / 'state/database-maintenance').is_file():
+                sites.append(f'{domain} {{\n  tls {config["email"]}\n  respond "Database recovery in progress" 503\n}}\n')
+            else:
+                sites.append(f'{domain} {{\n  tls {config["email"]}\n  encode zstd gzip\n{chat_import}  reverse_proxy 127.0.0.1:{spec.get("basePort", PORTS[environment]) + offset}\n}}\n')
     site_content = '\n'.join(sites)
     new_main = existing if imported else marker + '\n' + import_line + '\n'
     # Validate the proposed complete config before changing either live file.
@@ -1040,7 +1101,7 @@ def firewall(config):
     run(['ufw', '--force', 'enable'], capture=True)
 
 
-def install(config):
+def install(config, selected=None):
     steps = config['steps']
     if not steps.get('packages'):
         for line in run(['ss', '-H', '-ltnp'], capture=True).splitlines():
@@ -1061,7 +1122,14 @@ def install(config):
     persist_bundle()
     allocate_networks(config)
     allocate_ports(config)
+    if selected and not (Path(config['environments'][selected]['home']) / 'mushroom' / selected / 'runtime.env').exists():
+        needed = 4 if 'dev' in config['environments'] else 2
+        memory = int(re.search(r'MemTotal:\s+(\d+)', Path('/proc/meminfo').read_text()).group(1))
+        require(memory >= needed * 1024**2 * 9 // 10, f'Server needs at least a {needed} GiB resource class.')
+        require(shutil.disk_usage('/').free >= 10 * 1024**3, 'At least 10 GiB free disk is required.')
     for environment, spec in config['environments'].items():
+        if selected and environment != selected:
+            continue
         owner = provision_user(spec['user'])
         ssh_identity(spec['user'], owner)
         root = Path(spec['home']) / 'mushroom' / environment
@@ -1072,7 +1140,7 @@ def install(config):
         db = None
         policy = None
         if environment == 'production':
-            if not (root / 'secrets/database_url').exists():
+            if not local_database(config, environment) and not (root / 'secrets/database_url').exists():
                 db = ask('External production PostgreSQL URL (hidden)', secret=True,
                          validator=lambda v: database_url(v, production=True))
             if not (root / 'consent-policy.json').exists():
@@ -1086,7 +1154,7 @@ def install(config):
     # The current SSH port must already be listening; never edit sshd or close the current SSH session.
     firewall(config)
     github_handoff(config)
-    check_dns(config)
+    check_dns(config, selected)
     configure_proxy(config)
     steps['serverReady'] = True
     save(config)
@@ -1229,15 +1297,16 @@ def render_panel(config, actions, note=None):
         flags = [name for name, active in (
             ('prepared', state['prepared']), ('deployed', state['deployed']), ('chat', state['chat']),
             ('first-admin-pending', state['firstAdmin']),
-            ('backup', bool((config['environments'][environment] or {}).get('backupEnabled')))) if active]
+            ('backup', service_backup_enabled(config, environment, 'app')),
+            ('chat-backup', service_backup_enabled(config, environment, 'chat'))) if active]
         flags.append('media=' + str(state['media']))
         flags.append('bale=' + str(state['bale']))
         status.append(f'{environment}: ' + ' | '.join(flags))
 
     sections = [('STATUS', status)]
     groups = {'ENVIRONMENT': {'1', '2', '3'},
-              'OPERATIONS': {'4', '5', '8', '9', '10', '11'},
-              'CONFIGURATION & DEPLOYMENT': {'6', '7', '12', '13', '14'}}
+              'OPERATIONS': {'4', '5', '8', '9', '10', '11', '16', '17', '19', '21', '22'},
+              'CONFIGURATION & DEPLOYMENT': {'6', '7', '12', '13', '14', '15', '18', '20'}}
     grouped = tuple((name, [action for action in actions if str(action.key) in keys])
                     for name, keys in groups.items())
     known = set().union(*groups.values())
@@ -1356,7 +1425,8 @@ def panel_bale_webhook(config, environment=None):
 
 
 def panel_backup(config, environment=None):
-    backup(config, environment)
+    service = ask('Database (app / chat)', 'app', lambda value: choice(value, ('app', 'chat')))
+    run_backup(config, environment, service)
 
 
 def panel_github(config, environment=None):
@@ -1371,6 +1441,344 @@ def panel_install(config, environment=None):
     install(config)
 
 
+def add_environment(config, environment):
+    require(environment in ('dev', 'staging', 'production'), 'Select dev, staging, or production.')
+    if environment not in config['environments']:
+        spec = environment_configuration(config['domain'], environment)
+        candidate = {**config, 'environments': {**config['environments'], environment: spec}}
+        check_unique_domains(candidate)
+        config['environments'][environment] = spec
+        save(config)
+    install(config, selected=environment)
+
+
+def panel_add_environment(config, environment=None):
+    environment = ask('Add or resume environment (dev / staging / production)',
+                      validator=lambda value: choice(value, ('dev', 'staging', 'production')))
+    add_environment(config, environment)
+
+
+def panel_backup_settings(config, environment):
+    service = ask('Database (app / chat)', 'app', lambda value: choice(value, ('app', 'chat')))
+    active = service_backup_enabled(config, environment, service)
+    list_backups(environment, service)
+    enabled = ask('Daily encrypted backups (yes / no)', 'yes' if active else 'no',
+                  lambda value: choice(value, ('yes', 'no'))) == 'yes'
+    set_backup_schedule(config, environment, service, enabled)
+
+
+def panel_restore(config, environment):
+    service = ask('Database (app / chat)', 'app', lambda value: choice(value, ('app', 'chat')))
+    archives = list_backups(environment, service)
+    if config['environments'][environment].get('backupRemotePrefix'):
+        command, remote = remote_arguments(config, environment, service)
+        try:
+            names = run(command + ['lsf', '--files-only', '--max-depth', '1', remote], capture=True, sensitive=True)
+            for name in sorted(names.splitlines(), reverse=True):
+                if BACKUP_NAME.fullmatch(name):
+                    print('remote:' + name)
+        except InstallationError:
+            print('Off-site archive list unavailable. Local archives are still available.')
+    archive = ask('Archive number, absolute path, or remote:filename')
+    if archive.isdecimal():
+        index = int(archive)
+        require(1 <= index <= len(archives), 'Archive number does not exist.')
+        archive = archives[index - 1]
+    identity = ask('Path to original age identity (Enter to use the saved key)')
+    if isinstance(archive, str) and archive.startswith('remote:'):
+        restore_offsite(config, environment, service, archive.removeprefix('remote:'), identity or None)
+    else:
+        restore_isolated(config, environment, archive, service, identity or None)
+
+
+def environment_root(config, environment):
+    return Path(config['environments'][environment]['home']) / 'mushroom' / environment
+
+
+@contextmanager
+def deployment_lock(root, environment):
+    import fcntl
+    path = root / 'state/deploy.lock'
+    require((root / 'state/recovery-lock-compatible').is_file() and path.is_file() and not path.is_symlink(),
+            'Deploy this environment with the updated VPS workflow before database switching.')
+    require(not (root / '.deploy.lock').exists(), 'A deployment using the older lock is active.')
+    with path.open('r') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise InstallationError('Deployment or database recovery is active.') from None
+        yield
+
+
+def recovery_record(environment, kind):
+    directory = STATE / 'database-recovery'
+    directory.mkdir(exist_ok=True, mode=0o700)
+    return directory / f'{environment}-{kind}'
+
+
+def database_location(parsed):
+    return parsed.hostname, parsed.port or 5432, unquote(parsed.path[1:])
+
+
+def stage_application_recovery(config, environment, archive, target_file=None, identity=None):
+    root = environment_root(config, environment)
+    current = urlsplit((root / 'secrets/database_url').read_text().strip())
+    key = private_file(identity) if identity else backup_key(environment)
+    require(Path(archive).is_file() and key.is_file(), 'Backup archive or age identity is missing.')
+    with deployment_lock(root, environment):
+        if local_database(config, environment):
+            require(not target_file and current.hostname == 'postgres',
+                    'Managed databases use a fresh database on the same private PostgreSQL instance.')
+            target_name = f'mushroom_{environment.replace("-", "_")}_{secrets.token_hex(5)}_restore_test'
+            command = compose_command(config, environment) + ['exec', '-T', 'postgres']
+            user = unquote(current.username)
+            run(command + ['createdb', '-U', user, '-T', 'template0', target_name], sensitive=True)
+            target = current._replace(path='/' + target_name).geturl()
+            count = restore_archive(command, ['--username', user, '--dbname', target_name], archive, key)
+        else:
+            require(target_file, 'Create an empty recovery database and provide its protected TLS URL file.')
+            target = database_url(private_file(target_file).read_text().strip(), production=True)
+            destination = urlsplit(target)
+            require(re.fullmatch(r'[a-z][a-z0-9_]*_restore_test', database_location(destination)[2]),
+                    'Recovery database name must end in _restore_test.')
+            for existing in config['environments']:
+                path = environment_root(config, existing) / 'secrets/database_url'
+                if path.is_file():
+                    require(database_location(destination) != database_location(urlsplit(path.read_text().strip())),
+                            'Recovery cannot target an active environment database.')
+            with pg_client(config, environment, target) as (command, connection):
+                count = restore_archive(command, connection, archive, key)
+        require(count > 0, 'Recovery did not produce application tables.')
+        atomic_write(recovery_record(environment, 'candidate'), target + '\n')
+        print(f'Application recovery candidate prepared with {count} database objects.')
+
+
+def check_recovery_schema(command, environment):
+    if environment == 'dev':
+        args = ['--entrypoint', 'bash', 'api', '-ec',
+                'export DATABASE_URL="$(cat /run/secrets/database_url)"; '
+                'exec pnpm --filter @sabz-zendegi/api exec prisma migrate status']
+    else:
+        args = ['api', 'node_modules/prisma/build/index.js', 'migrate', 'status']
+    run(command + ['run', '--rm', '--no-deps', *args], sensitive=True)
+
+
+def activate_application_recovery(config, environment, kind):
+    root = environment_root(config, environment)
+    source = root / 'secrets/database_url'
+    record = recovery_record(environment, kind)
+    require(record.is_file() and not record.is_symlink(), 'No saved database connection for this operation.')
+    target = database_url(record.read_text().strip(), production=not local_database(config, environment))
+    maintenance = root / 'state/database-maintenance'
+    journal = recovery_record(environment, 'in-progress')
+    with deployment_lock(root, environment):
+        require(not journal.exists() or kind == 'in-progress', 'Resume the interrupted database switch first.')
+        command = compose_command(config, environment)
+        previous = source.read_text()
+        require(kind == 'in-progress' or previous.strip() != target, 'This database connection is already active.')
+        permissions = source.stat()
+        if kind != 'in-progress':
+            atomic_write(journal, previous)
+
+        def write_connection(value):
+            atomic_write(source, value, stat.S_IMODE(permissions.st_mode))
+            os.chown(source, permissions.st_uid, permissions.st_gid)
+
+        def start_api():
+            run(command + ['up', '-d', '--no-deps', '--force-recreate', '--wait', '--wait-timeout', '180', 'api'],
+                sensitive=True)
+
+        atomic_write(maintenance, '503\n')
+        try:
+            configure_proxy(config)
+            run(command + ['stop', 'api'], sensitive=True)
+            write_connection(target + '\n')
+            check_recovery_schema(command, environment)
+            start_api()
+        except BaseException:
+            print('Switch interrupted or failed. Restoring the saved connection while maintenance remains active.')
+            if kind != 'in-progress':
+                write_connection(previous)
+                start_api()
+                maintenance.unlink()
+                try:
+                    configure_proxy(config)
+                except BaseException:
+                    atomic_write(maintenance, '503\n')
+                    raise
+                journal.unlink()
+            raise
+        if kind != 'in-progress':
+            atomic_write(recovery_record(environment, 'previous'), previous)
+        maintenance.unlink()
+        try:
+            configure_proxy(config)
+        except BaseException:
+            atomic_write(maintenance, '503\n')
+            raise
+        journal.unlink()
+        print('Application connection is active and API health checks passed.')
+
+
+def panel_application_recovery(config, environment):
+    action = ask('Application database (prepare / switch / rollback / resume)', 'prepare',
+                 lambda value: choice(value, ('prepare', 'switch', 'rollback', 'resume')))
+    if action == 'prepare':
+        archives = list_backups(environment, 'app')
+        value = ask('Archive number or absolute file path')
+        if value.isdecimal():
+            require(1 <= int(value) <= len(archives), 'Archive number does not exist.')
+            value = archives[int(value) - 1]
+        identity = ask('Path to original age identity (Enter to use the saved key)')
+        target = None if local_database(config, environment) else ask('Path to private empty recovery database URL')
+        stage_application_recovery(config, environment, value, target, identity or None)
+        return
+    if action == 'rollback':
+        print('Writes made after the previous switch are stored in the newer database.')
+    require(typed_confirmation(f'{action} application database for {environment}. This interrupts API traffic.',
+                               environment, terminal_input), 'Cancelled.')
+    activate_application_recovery(config, environment,
+                                  {'switch': 'candidate', 'rollback': 'previous', 'resume': 'in-progress'}[action])
+
+
+
+def panel_recovery_bundle(config, environment):
+    """Export only the files needed to reconstruct an environment on a replacement host."""
+    spec = config['environments'][environment]
+    root = Path(spec['home']) / 'mushroom' / environment
+    recipient = ask('Public age recipient for recovery bundle',
+                    validator=lambda value: value if re.fullmatch(r'age1[a-z0-9]{58}', value) else
+                    choice(value, []))
+    if shutil.which('age') is None:
+        run(['apt-get', 'install', '-y', '--no-install-recommends', 'age'])
+    directory = backup_directory(environment, 'recovery')
+    require(not directory.is_symlink() and not directory.parent.is_symlink(),
+            'Recovery destination cannot be a symlink.')
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    destination = directory / f'{stamp}-{secrets.token_hex(4)}.tar.age'
+    partial = destination.with_suffix('.partial')
+    files = ['runtime.env', 'network.yaml', 'consent-policy.json', 'chat.compose.yaml', 'chat.database.yaml',
+             'postgres.compose.yaml', 'state/chat.initialized', 'bootstrap/complete']
+    files.extend('secrets/' + name for name in (*SECRET_NAMES, 'postgres_password',
+                                               'ejabberd-private.pem', 'ejabberd-public.jwk'))
+    for marker in ('current', 'previous'):
+        path = root / 'state' / marker
+        if path.is_file():
+            release = Path(path.read_text().strip()).resolve()
+            require(release.is_relative_to((root / 'releases').resolve()), 'Invalid release state.')
+            files.append(str((release / 'release-manifest.json').relative_to(root)))
+    files = [name for name in dict.fromkeys(files) if (root / name).is_file()]
+    require('runtime.env' in files and 'secrets/database_url' in files, 'Prepare the environment first.')
+    require(all(not (root / name).is_symlink() for name in files), 'Recovery files cannot be symlinks.')
+    try:
+        binary_pipeline(['tar', '-C', root, '-cf', '-', '--', *files],
+                        ['age', '--recipient', recipient, '--output', partial],
+                        stages=('recovery package', 'age encryption'))
+        os.chmod(partial, 0o600)
+        os.replace(partial, destination)
+    finally:
+        partial.unlink(missing_ok=True)
+    print(f'Encrypted recovery package: {destination}. Copy it off-site with the database archives.')
+
+
+
+def monitoring_path(environment):
+    return STATE / 'monitoring' / f'{environment}.json'
+
+
+def notify_monitor(url, environment, event):
+    parsed = urlsplit(url)
+    require(parsed.scheme == 'https' and parsed.hostname and not parsed.username and not parsed.password,
+            'Use an HTTPS monitoring URL.')
+    request = Request(url, data=json.dumps({'environment': environment, 'event': event}).encode(),
+                      headers={'Content-Type': 'application/json'})
+    try:
+        with urlopen(request, timeout=8) as reply:
+            require(200 <= reply.status < 300, 'Monitoring endpoint rejected the request.')
+    except OSError:
+        raise InstallationError('Monitoring endpoint did not accept the request.') from None
+
+
+def panel_monitoring(config, environment):
+    alert = ask('Alert webhook URL', secret=True)
+    heartbeat = ask('External heartbeat URL', secret=True)
+    notify_monitor(alert, environment, 'test')
+    notify_monitor(heartbeat, environment, 'heartbeat')
+    path = monitoring_path(environment)
+    path.parent.mkdir(exist_ok=True, mode=0o700)
+    atomic_write(path, json.dumps({'alert': alert, 'heartbeat': heartbeat}))
+    atomic_write('/etc/systemd/system/mushroom-monitor.service',
+                 '[Service]\nType=oneshot\nExecStart=/usr/local/sbin/mushroom monitor\n', 0o644)
+    atomic_write('/etc/systemd/system/mushroom-monitor.timer',
+                 '[Timer]\nOnCalendar=*:0/5\nPersistent=true\n[Install]\nWantedBy=timers.target\n', 0o644)
+    run(['systemctl', 'daemon-reload'])
+    run(['systemctl', 'enable', '--now', 'mushroom-monitor.timer'])
+    print('Monitoring enabled. Verify the test alert and set an external heartbeat timeout.')
+
+
+def monitor_environment(config, environment, spec, profile):
+    path = monitoring_path(environment).with_suffix('.state')
+    previous = json.loads(path.read_text()) if path.is_file() else {}
+    counts, alerts = {}, set()
+    checks = {name: 'https://' + domain + ('/v1/health/ready' if name == 'api' else '/')
+              for name, domain in spec['domains'].items()}
+    checks['chat'] = 'https://' + spec['domains']['api'] + '/v1/health/chat'
+    for name, url in checks.items():
+        try:
+            with urlopen(url, timeout=5) as response:
+                healthy = 200 <= response.status < 300
+        except OSError:
+            healthy = False
+        counts[name] = 0 if healthy else previous.get('counts', {}).get(name, 0) + 1
+        if counts[name] >= 3:
+            alerts.add(f'service-unhealthy:{name}')
+    for directory in ('/', '/var/lib/docker', '/var/backups/mushroom', spec['home']):
+        if Path(directory).is_dir():
+            usage = shutil.disk_usage(directory)
+            if usage.used / usage.total >= 0.85:
+                alerts.add(f'disk-capacity:{directory}')
+    for service in ('app', 'chat'):
+        if not service_backup_enabled(config, environment, service):
+            continue
+        directory = backup_directory(environment, service)
+        stamps = ['last-success']
+        if spec.get('backupRemotePrefix'):
+            stamps.append('last-offsite-success')
+        for name in stamps:
+            marker = directory / name
+            if not marker.is_file() or time.time() - marker.stat().st_mtime >= 26 * 3600:
+                alerts.add(f'{name}-stale:{service}')
+        failure = directory / 'last-error'
+        if failure.is_file():
+            alerts.add(f'{failure.read_text().strip()}:{service}')
+    reported = set(previous.get('reported', [])) & alerts
+    try:
+        notify_monitor(profile['heartbeat'], environment, 'heartbeat')
+    except InstallationError:
+        # Keep delivering alerts if only the heartbeat service is down.
+        print(f'{environment}: heartbeat endpoint unavailable.')
+    try:
+        for event in sorted(alerts - reported):
+            notify_monitor(profile['alert'], environment, event)
+            reported.add(event)
+    finally:
+        atomic_write(path, json.dumps({'counts': counts, 'reported': sorted(reported)}))
+
+
+def monitor(config):
+    failed = []
+    for environment, spec in config['environments'].items():
+        path = monitoring_path(environment)
+        if path.is_file():
+            try:
+                monitor_environment(config, environment, spec, json.loads(private_file(path).read_text()))
+            except InstallationError:
+                failed.append(environment)
+    require(not failed, 'Alert delivery failed for ' + ', '.join(failed))
+
+
+
 def panel_menu(config):
     """Every entry calls an existing operation; the panel adds no new behaviour."""
     actions = [
@@ -1382,6 +1790,14 @@ def panel_menu(config):
         PanelAction('6', 'Configure domains/runtime', panel_configure, True),
         PanelAction('7', 'Configure dev object storage', panel_storage),
         PanelAction('8', 'Run encrypted backup now', panel_backup, True),
+        PanelAction('15', 'Add or resume an environment', panel_add_environment),
+        PanelAction('16', 'Configure backup schedule', panel_backup_settings, True),
+        PanelAction('18', 'Configure S3 / SFTP backup destination', panel_offsite, True),
+        PanelAction('22', 'Prepare or switch application database recovery', panel_application_recovery, True),
+        PanelAction('21', 'Export encrypted environment recovery package', panel_recovery_bundle, True),
+        PanelAction('20', 'Configure monitoring and send a test alert', panel_monitoring, True),
+        PanelAction('19', 'Retry off-site transfer', panel_retry_transfer, True),
+        PanelAction('17', 'Import encrypted backup into an isolated database', panel_restore, True),
         PanelAction('9', 'Print GitHub handoff summary', panel_github),
         PanelAction('10', 'Re-apply proxy/TLS configuration', panel_proxy, False, True),
         PanelAction('11', 'Resume full installation', panel_install, False, True),
@@ -1394,7 +1810,7 @@ def panel_menu(config):
     return actions
 
 
-def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print):
+def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print, operation_lock=nullcontext):
     """Menu loop with injectable input/output so it is testable without a terminal."""
     actions = panel_menu(config) if actions is None else actions
     reader = reader or terminal_input
@@ -1432,10 +1848,18 @@ def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print):
         panel_audit(action.key, environment)
         try:
             emit('\n--- ' + action.label + ' ---')
-            if action.handler is panel_logs:
-                panel_logs(config, environment, reader=reader, emit=emit)
-            else:
-                action.handler(config, environment)
+            with operation_lock():
+                if operation_lock is lock:
+                    current = json.loads((STATE / 'installation.json').read_text())
+                    config.clear()
+                    config.update(current)
+                if action.handler is panel_logs:
+                    panel_logs(config, environment, reader=reader, emit=emit)
+                else:
+                    action.handler(config, environment)
+                if operation_lock is lock:
+                    actions = panel_menu(config)
+                    by_key = {str(entry.key): entry for entry in actions}
         except (InstallationError, OSError) as error:
             note = f'{action.label} failed: {error}'
         except EOFError:
@@ -1458,7 +1882,7 @@ def panel(config):
     try:
         if updater.panel_offer(BUNDLE):
             os.execv(sys.executable, [sys.executable, '-X', 'utf8', str(updater.ROOT / 'current/installation/manager.py'), 'panel'])
-        run_panel(config)
+        run_panel(config, operation_lock=lock)
     except KeyboardInterrupt:
         print('\nPanel closed.')
     print()
@@ -1488,6 +1912,8 @@ def compose_command(config, environment):
         args.extend(['--file', root / 'chat.compose.yaml'])
     if (root / 'chat.database.yaml').exists():
         args.extend(['--file', root / 'chat.database.yaml'])
+    if environment == 'production' and local_database(config, environment):
+        args.extend(['--file', root / 'postgres.compose.yaml'])
     return args
 
 
@@ -1534,12 +1960,14 @@ def doctor(config, deployed=False):
             except (OSError, ssl.SSLError):
                 raise InstallationError(f'{domain}: HTTPS certificate not ready; check DNS/firewall/Caddy and rerun doctor.') from None
         if environment == 'production':
-            database_url((root / 'secrets/database_url').read_text().strip(), True)
+            managed = local_database(config, environment)
+            database_url((root / 'secrets/database_url').read_text().strip(), not managed)
             validate_policy(root / 'consent-policy.json', 'production')
-            with pg_client(config, environment) as (command, connection):
-                version = run(command + ['psql', *connection, '-At', '-v', 'ON_ERROR_STOP=1', '-c', 'SHOW server_version_num'],
-                              capture=True, sensitive=True)
-            require(version.strip().isdigit() and int(version.strip()) >= 160000, 'External PostgreSQL must be version 16 or newer.')
+            if not managed or (root / 'state/current').is_file():
+                with pg_client(config, environment) as (command, connection):
+                    version = run(command + ['psql', *connection, '-At', '-v', 'ON_ERROR_STOP=1', '-c', 'SHOW server_version_num'],
+                                  capture=True, sensitive=True)
+                require(version.strip().isdigit() and int(version.strip()) >= 160000, 'PostgreSQL must be version 16 or newer.')
         print(f'{environment}: configuration ready' + ('; awaiting first CD' if not (root / 'state/current').exists() and environment != 'dev' else ''))
         if deployed:
             for name, domain in spec['domains'].items():
@@ -1596,43 +2024,268 @@ def persist_bundle():
     atomic_write('/usr/local/sbin/mushroom', '#!/usr/bin/env bash\nset -Eeuo pipefail\nexec python3 -X utf8 /opt/mushroom-installer/installation/manager.py "$@"\n', 0o755)
 
 
-def configure_backups(config, environment):
-    spec = config['environments'][environment]
-    if not spec.get('backupEnabled'):
-        return
+BACKUP_NAME = re.compile(r'[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}\.dump\.age')
+
+
+def backup_directory(environment, service):
+    root = Path('/var/backups/mushroom') / environment
+    return root if service == 'app' else root / service
+
+
+def backup_key(environment):
+    return STATE / 'backup-keys' / f'{environment}.key'
+
+
+def initialize_backup(environment, service):
+    directory = backup_directory(environment, service)
+    key = backup_key(environment)
+    recipient = key.with_suffix('.recipient')
+    require(not key.is_symlink() and not recipient.is_symlink(), 'Backup key files cannot be symlinks.')
+    if not key.exists():
+        require(not recipient.exists() and not any(backup_directory(environment, 'app').rglob('*.dump.age')),
+                'Original backup key is missing. Restore the original identity before continuing.')
     if shutil.which('age') is None:
         run(['apt-get', 'install', '-y', '--no-install-recommends', 'age'])
-    key_dir = STATE / 'backup-keys'
-    key_dir.mkdir(exist_ok=True, mode=0o700)
-    key = key_dir / f'{environment}.key'
-    recipient_file = key_dir / f'{environment}.recipient'
+    key.parent.mkdir(exist_ok=True, mode=0o700)
     if not key.exists():
-        prior_backups = Path('/var/backups/mushroom') / environment
-        require(not recipient_file.exists() and not any(prior_backups.glob('*.dump.age')),
-                'Backup private key is missing. Restore its original off-site copy; key regeneration is refused.')
         run(['age-keygen', '-o', key], sensitive=True)
-        os.chmod(key, 0o600)
-    if not recipient_file.exists():
-        atomic_write(recipient_file, run(['age-keygen', '-y', key], capture=True).strip() + '\n')
-    backup_dir = Path('/var/backups/mushroom') / environment
-    backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    unit = f'mushroom-backup-{environment}'
+    os.chmod(key, 0o600)
+    public_key = run(['age-keygen', '-y', key], capture=True, sensitive=True).strip()
+    if recipient.exists():
+        require(recipient.read_text().strip() == public_key, 'Backup identity does not match its saved recipient.')
+    else:
+        atomic_write(recipient, public_key + '\n')
+    require(not directory.is_symlink() and not backup_directory(environment, 'app').is_symlink(),
+            'Backup destination cannot be a symlink.')
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(backup_directory(environment, 'app'), 0o700)
+    os.chmod(directory, 0o700)
+
+
+def service_backup_enabled(config, environment, service):
+    spec = config['environments'][environment]
+    return bool(spec.get('backupServices', {}).get(service, spec.get('backupEnabled', False)))
+
+
+def configure_backups(config, environment):
+    for service in ('app', 'chat'):
+        if service_backup_enabled(config, environment, service):
+            install_backup_timer(environment, service)
+
+
+def install_backup_timer(environment, service):
+    initialize_backup(environment, service)
+    suffix = '' if service == 'app' else f'-{service}'
+    unit = f'mushroom-backup-{environment}{suffix}'
     atomic_write(f'/etc/systemd/system/{unit}.service', '[Unit]\nDescription=Mushroom encrypted database backup\nAfter=docker.service network-online.target\n'
-                 f'[Service]\nType=oneshot\nUMask=0077\nExecStart=/usr/local/sbin/mushroom backup --environment {environment}\n', 0o644)
-    atomic_write(f'/etc/systemd/system/{unit}.timer', '[Unit]\nDescription=Daily Mushroom database backup\n[Timer]\nOnCalendar=*-*-* 03:00:00 UTC\nRandomizedDelaySec=30m\nPersistent=true\n[Install]\nWantedBy=timers.target\n', 0o644)
+                 f'[Service]\nType=oneshot\nUMask=0077\nExecStart=/usr/local/sbin/mushroom backup --environment {environment} --service {service} --scheduled\n', 0o644)
+    atomic_write(f'/etc/systemd/system/{unit}.timer', '[Unit]\nDescription=Daily Mushroom database backup\n[Timer]\nOnCalendar=hourly\nOnActiveSec=1min\nRandomizedDelaySec=5m\nPersistent=true\n[Install]\nWantedBy=timers.target\n', 0o644)
     run(['systemctl', 'daemon-reload'])
     run(['systemctl', 'enable', '--now', unit + '.timer'])
 
 
+
+def set_backup_schedule(config, environment, service, enabled):
+    unit = f'mushroom-backup-{environment}' + ('' if service == 'app' else f'-{service}')
+    if enabled:
+        install_backup_timer(environment, service)
+    elif Path(f'/etc/systemd/system/{unit}.timer').is_file():
+        run(['systemctl', 'disable', '--now', unit + '.timer'])
+    config['environments'][environment].setdefault('backupServices', {})[service] = enabled
+    save(config)
+
+
+def offsite_config(environment):
+    return STATE / 'backup-remotes' / f'{environment}.conf'
+
+
+def private_file(path):
+    path = Path(path)
+    require(path.is_file() and not path.is_symlink(), 'Select a regular private file.')
+    metadata = path.stat()
+    require(metadata.st_uid == 0 and stat.S_IMODE(metadata.st_mode) == 0o600,
+            'File must be owned by root with mode 0600.')
+    return path
+
+
+def guided_offsite_profile():
+    kind = ask('Off-site backup destination (s3 / sftp)', 's3',
+               lambda value: choice(value, ('s3', 'sftp')))
+    if kind == 's3':
+        endpoint = ask('S3 HTTPS endpoint')
+        require(urlsplit(endpoint).scheme == 'https' and urlsplit(endpoint).hostname,
+                'Enter the bucket provider HTTPS endpoint.')
+        options = {'type': 's3', 'provider': 'Other', 'endpoint': endpoint,
+                   'region': ask('S3 region', 'us-east-1'),
+                   'access_key_id': ask('S3 access key ID', secret=True),
+                   'secret_access_key': ask('S3 secret access key', secret=True),
+                   'no_check_bucket': 'true'}
+        require(options['access_key_id'] and options['secret_access_key'], 'Both S3 credentials are required.')
+    else:
+        options = {'type': 'sftp', 'host': ask('SFTP hostname', validator=hostname),
+                   'user': ask('SFTP user'), 'port': ask('SFTP port', '22'),
+                   'key_file': str(private_file(ask('Absolute path to SFTP private key'))),
+                   'known_hosts_file': ask('Absolute path to verified SSH known_hosts'),
+                   'shell_type': 'none'}
+        require(options['user'] and options['port'].isdecimal() and 1 <= int(options['port']) <= 65535,
+                'Enter an SFTP user and valid port.')
+    profile = configparser.ConfigParser(interpolation=None)
+    profile['backup'] = options
+    output = io.StringIO()
+    profile.write(output)
+    return output.getvalue()
+
+
+
+def configure_offsite(config, environment):
+    supplied = ask('Private rclone config path (Enter for guided setup)')
+    content = private_file(supplied).read_text() if supplied else guided_offsite_profile()
+    profile = configparser.ConfigParser(interpolation=None)
+    try:
+        profile.read_string(content)
+    except configparser.Error:
+        raise InstallationError('Invalid rclone config.') from None
+    require(profile.sections() == ['backup'] and not profile.defaults(), 'Use a single [backup] rclone remote.')
+    remote = profile['backup']
+    kind = remote.get('type')
+    require(kind in ('s3', 'sftp'), 'Backup remote must be S3 or SFTP.')
+    if kind == 'sftp':
+        require(remote.get('known_hosts_file') and remote.get('key_file'),
+                'SFTP needs a pinned known_hosts file and an SSH private key.')
+        require(remote.get('shell_type') == 'none', 'Set shell_type = none for backup SFTP.')
+        identity = private_file(remote['key_file'])
+        host_keys = Path(remote['known_hosts_file'])
+        require(identity.is_absolute() and host_keys.is_absolute() and host_keys.is_file() and not host_keys.is_symlink()
+                and host_keys.stat().st_uid == 0 and not host_keys.stat().st_mode & 0o022,
+                'Use absolute paths and a root-owned known_hosts file that other users cannot modify.')
+    else:
+        require(urlsplit(remote.get('endpoint', '')).scheme == 'https', 'S3 needs an explicit HTTPS endpoint.')
+    prefix = ask('Remote folder (S3: bucket/prefix, SFTP: relative folder)')
+    require(all(part not in ('.', '..') and re.fullmatch(r'[a-zA-Z0-9._-]+', part)
+                for part in prefix.split('/')), 'Use a relative remote path without dot segments.')
+    if shutil.which('rclone') is None:
+        run(['apt-get', 'install', '-y', '--no-install-recommends', 'rclone'])
+    directory = offsite_config(environment).parent
+    directory.mkdir(exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix='verify-', dir=directory) as temporary:
+        path = Path(temporary) / 'remote.conf'
+        atomic_write(path, content)
+        run(['rclone', '--config', path, '--contimeout', '15s', '--timeout', '1m',
+             'lsf', '--max-depth', '1', 'backup:' + prefix], capture=True, sensitive=True)
+        os.replace(path, offsite_config(environment))
+    config['environments'][environment]['backupRemotePrefix'] = prefix
+    save(config)
+    print('Backup destination configured. Run a backup to verify upload and read-back.')
+
+
+def remote_arguments(config, environment, service, filename=''):
+    prefix = config['environments'][environment].get('backupRemotePrefix')
+    require(prefix, 'No off-site backup destination configured for this environment.')
+    command = ['rclone', '--config', private_file(offsite_config(environment)),
+               '--contimeout', '15s', '--timeout', '2m', '--retries', '2']
+    return command, f'backup:{prefix}/{environment}/{service}/{filename}'
+
+
+def encrypted_hash(path):
+    with Path(path).open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def transfer_backup(config, environment, service, path):
+    try:
+        upload_backup(config, environment, service, path)
+    except (InstallationError, OSError):
+        directory = backup_directory(environment, service)
+        if directory.is_dir() and not directory.is_symlink():
+            atomic_write(directory / 'last-error', 'offsite-failed\n')
+        raise
+
+
+def upload_backup(config, environment, service, path):
+    path = Path(path)
+    require(path.parent == backup_directory(environment, service) and not path.is_symlink() and path.is_file()
+            and BACKUP_NAME.fullmatch(path.name), 'Select a saved encrypted backup for this environment and service.')
+    command, destination = remote_arguments(config, environment, service, path.name)
+    expected = encrypted_hash(path)
+    run(command + ['copyto', '--immutable', path, destination], sensitive=True)
+    with tempfile.TemporaryFile() as errors:
+        with subprocess.Popen([str(arg) for arg in command + ['cat', destination]], stdout=subprocess.PIPE,
+                              stderr=errors) as download:
+            actual = hashlib.file_digest(download.stdout, 'sha256').hexdigest()
+            require(download.wait() == 0 and actual == expected,
+                    'Off-site read-back did not match the local encrypted archive.')
+    atomic_write(path.parent / 'last-offsite-success', json.dumps({
+        'archive': path.name, 'sha256': expected, 'time': datetime.now(timezone.utc).isoformat()}) + '\\n')
+    error_path = path.parent / 'last-error'
+    if error_path.is_file() and error_path.read_text().strip() == 'offsite-failed':
+        error_path.unlink()
+    print(f'Off-site backup verified: {path.name}')
+
+
+def restore_offsite(config, environment, service, name, identity=None):
+    require(BACKUP_NAME.fullmatch(name), 'Select the exact encrypted archive filename.')
+    command, source = remote_arguments(config, environment, service, name)
+    with tempfile.TemporaryDirectory(prefix='restore-', dir=STATE) as temporary:
+        path = Path(temporary) / name
+        run(command + ['copyto', source, path], sensitive=True)
+        restore_isolated(config, environment, path, service, identity)
+
+
+def panel_offsite(config, environment):
+    configure_offsite(config, environment)
+
+
+def panel_retry_transfer(config, environment):
+    service = ask('Database (app / chat)', 'app', lambda value: choice(value, ('app', 'chat')))
+    archives = list_backups(environment, service)
+    require(archives, 'No encrypted archive is available.')
+    index = ask('Archive number', '1',
+                lambda value: int(value) if value.isdecimal() else choice(value, []))
+    require(1 <= index <= len(archives), 'Archive number does not exist.')
+    transfer_backup(config, environment, service, archives[index - 1])
+
+
+
+def list_backups(environment, service):
+    directory = backup_directory(environment, service)
+    archives = sorted((p for p in directory.glob('*.dump.age')
+                       if BACKUP_NAME.fullmatch(p.name) and not p.is_symlink() and p.is_file()), reverse=True)
+    stamp = directory / 'last-success'
+    offsite = directory / 'last-offsite-success'
+    print('Last verified off-site archive: ' + (json.loads(offsite.read_text())['archive'] if offsite.is_file() else 'none'))
+    print('Last local success: ' + (stamp.read_text().strip() if stamp.is_file() else 'none'))
+    for index, path in enumerate(archives, start=1):
+        print(f'{index}. {path.name} ({path.stat().st_size:,} bytes)')
+    return archives
+
+
 @contextmanager
-def pg_client(config, environment, target=None):
+def pg_client(config, environment, target=None, *, service='app', network='host'):
     spec = config['environments'][environment]
-    if environment != 'production' and target is None:
+    if target is None and service == 'chat':
         values = load_env(Path(spec['home']) / 'mushroom' / environment / 'runtime.env')
-        yield compose_command(config, environment) + ['exec', '-T', 'postgres'], ['--username', values['POSTGRES_USER'], '--dbname', values['POSTGRES_DB']]
+        host = values.get('EJABBERD_SQL_HOST')
+        if host in ('postgres', 'chat-postgres'):
+            labels = ['--filter', f'label=com.docker.compose.project=mushroom-{environment}',
+                      '--filter', f'label=com.docker.compose.service={host}']
+            containers = run(['docker', 'ps', '-q', *labels], capture=True).split()
+            require(len(containers) == 1, 'Expected one running PostgreSQL container for chat backup.')
+            yield ['docker', 'exec', '-i', containers[0]], [
+                '--username', values['EJABBERD_SQL_USER'], '--dbname', values['EJABBERD_SQL_DB']]
+            return
+        host = hostname(host or '')
+        user, password, db = (quote(values[key], safe='') for key in (
+            'EJABBERD_SQL_USER', 'EJABBERD_SQL_PASSWORD', 'EJABBERD_SQL_DB'))
+        tls = 'require' if environment == 'production' else 'prefer'
+        target = f'postgresql://{user}:{password}@{host}/{db}?sslmode={tls}'
+    if local_database(config, environment) and target is None:
+        source = Path(spec['home']) / 'mushroom' / environment / 'secrets/database_url'
+        active = urlsplit(database_url(source.read_text().strip()))
+        yield compose_command(config, environment) + ['exec', '-T', 'postgres'], [
+            '--username', unquote(active.username), '--dbname', unquote(active.path[1:])]
         return
     source = Path(spec['home']) / 'mushroom' / environment / 'secrets/database_url'
-    parsed = urlsplit(database_url(target if target is not None else source.read_text().strip(), production=environment == 'production'))
+    parsed = urlsplit(database_url(target if target is not None else source.read_text().strip(), production=not local_database(config, environment)))
     query = parse_qs(parsed.query)
     require(not set(query) - {'sslmode', 'schema', 'connection_limit', 'pool_timeout', 'connect_timeout', 'pgbouncer'},
             'Backup client URL contains unsupported options; configure provider backup access explicitly.')
@@ -1643,13 +2296,13 @@ def pg_client(config, environment, target=None):
     os.close(fd)
     try:
         atomic_write(temporary, ''.join(f'{key}={value}\n' for key, value in settings.items()))
-        yield ['docker', 'run', '--rm', '-i', '--network', 'host', '--env-file', temporary,
-               f'postgres:{spec.get("pgMajor", "16")}-alpine'], []
+        yield ['docker', 'run', '--rm', '-i', '--network', network, '--env-file', temporary,
+               f'postgres:{spec.get("pgMajor", "16")}-alpine'], ['--dbname', settings['PGDATABASE']]
     finally:
         Path(temporary).unlink(missing_ok=True)
 
 
-def binary_pipeline(left, right):
+def binary_pipeline(left, right, *, stages=('source', 'destination')):
     # Both error streams are private temporary files, so a noisy failing process cannot deadlock the pipe.
     with tempfile.TemporaryFile() as left_errors, tempfile.TemporaryFile() as right_errors:
         producer = subprocess.Popen([str(arg) for arg in left], stdout=subprocess.PIPE, stderr=left_errors)
@@ -1659,25 +2312,41 @@ def binary_pipeline(left, right):
             producer.stdout.close()
             consumer_status = consumer.wait()
             producer_status = producer.wait()
-            require(producer_status == 0 and consumer_status == 0, 'Backup/restore pipeline failed; no successful result recorded.')
+            require(producer_status == 0 and consumer_status == 0,
+                    f'{stages[0]} exited {producer_status}; {stages[1]} exited {consumer_status}. No success recorded.')
         finally:
             if producer.poll() is None:
                 producer.kill()
                 producer.wait()
 
 
-def backup(config, environment):
-    key = STATE / 'backup-keys' / f'{environment}.key'
-    require(key.is_file(), 'Enable backups during installation first.')
+def run_backup(config, environment, service):
+    directory = backup_directory(environment, service)
+    error_path = directory / 'last-error'
+    try:
+        backup(config, environment, service, initialize=True)
+    except (InstallationError, OSError):
+        if directory.is_dir() and not directory.is_symlink() and not error_path.exists():
+            atomic_write(error_path, 'backup-failed\n')
+        raise
+
+
+
+def backup(config, environment, service='app', *, initialize=False):
+    if initialize:
+        initialize_backup(environment, service)
+    key = backup_key(environment)
+    require(key.is_file(), 'Backup identity is missing. Configure backups or recover the original age identity.')
     recipient = run(['age-keygen', '-y', key], capture=True).strip()
-    directory = Path('/var/backups/mushroom') / environment
+    directory = backup_directory(environment, service)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     filename = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + secrets.token_hex(4) + '.dump.age'
     destination = directory / filename
     temporary = directory / (filename + '.partial')
     try:
-        with pg_client(config, environment) as (command, connection):
+        with (pg_client(config, environment) if service == 'app' else pg_client(config, environment, service=service)) as (command, connection):
             binary_pipeline(command + ['pg_dump', '--format=custom', '--no-owner', '--no-acl', *connection],
-                            ['age', '--recipient', recipient, '--output', temporary])
+                            ['age', '--recipient', recipient, '--output', temporary], stages=('pg_dump', 'age encryption'))
         os.chmod(temporary, 0o600)
         os.replace(temporary, destination)
         atomic_write(directory / 'last-success', datetime.now(timezone.utc).isoformat() + '\n')
@@ -1686,28 +2355,80 @@ def backup(config, environment):
             if previous != destination and not previous.is_symlink() and previous.is_file() \
                     and re.fullmatch(r'[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}\.dump\.age', previous.name) and previous.stat().st_mtime < cutoff:
                 previous.unlink()
-        print(f'Encrypted logical backup: {destination}. Keep an off-site copy and a separate copy of the age key.')
+        print(f'Encrypted logical backup: {destination}. Keep a separate copy of the age key.')
+        error_path = directory / 'last-error'
+        error_path.unlink(missing_ok=True)
+        if config['environments'][environment].get('backupRemotePrefix'):
+            transfer_backup(config, environment, service, destination)
     finally:
         temporary.unlink(missing_ok=True)
 
 
 def restore(config, environment, archive, target_file):
     require(archive and target_file, 'Restore needs --archive and --target-url-file for an empty *_restore_test database.')
-    target = Path(target_file).read_text().strip()
-    parsed = urlsplit(database_url(target, production=environment == 'production'))
+    target = private_file(target_file).read_text().strip()
+    parsed = urlsplit(database_url(target, production=not local_database(config, environment)))
     require(re.fullmatch(r'[a-z][a-z0-9_]*_restore_test', unquote(parsed.path[1:])), 'Restore target database name must end in _restore_test.')
     original = Path(config['environments'][environment]['home']) / 'mushroom' / environment / 'secrets/database_url'
     current = urlsplit(original.read_text().strip())
     require((parsed.hostname, parsed.port or 5432, unquote(parsed.path)) != (current.hostname, current.port or 5432, unquote(current.path)), 'Restore cannot target the source database.')
-    key = STATE / 'backup-keys' / f'{environment}.key'
-    require(key.is_file() and Path(archive).is_file(), 'Backup archive or decryption key is missing.')
     with pg_client(config, environment, target) as (command, connection):
-        count = run(command + ['psql', *connection, '-At', '-v', 'ON_ERROR_STOP=1', '-c',
-                    "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema' AND c.relkind IN ('r','p','S','v','m','f')"], capture=True, sensitive=True)
-        require(count.strip() == '0', 'Restore target is not empty; no data was changed.')
-        binary_pipeline(['age', '--decrypt', '--identity', key, archive],
-                        command + ['pg_restore', *connection, '--single-transaction', '--exit-on-error', '--no-owner', '--no-acl'])
-    print('Restore drill completed in the separate empty test database. Production was not changed.')
+        restore_archive(command, connection, archive, backup_key(environment))
+    print('Restore drill completed in the separate empty test database.')
+
+
+RESTORED_OBJECTS = (
+    "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+    "WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname <> 'information_schema' "
+    "AND c.relkind IN ('r','p','S','v','m','f')"
+)
+
+
+def object_count(command, connection):
+    return int(run(command + ['psql', *connection, '-At', '-v', 'ON_ERROR_STOP=1',
+                              '-c', RESTORED_OBJECTS], capture=True, sensitive=True).strip())
+
+
+def restore_archive(command, connection, archive, key):
+    require(Path(key).is_file() and Path(archive).is_file(), 'Backup archive or decryption key is missing.')
+    require(object_count(command, connection) == 0, 'Restore target is not empty; no data was changed.')
+    # Verify the authenticated tail before pg_restore can commit a valid-looking prefix.
+    with open(os.devnull, 'wb') as sink:
+        verified = subprocess.run(['age', '--decrypt', '--identity', str(key), str(archive)],
+                                  stdout=sink, stderr=subprocess.DEVNULL)
+    require(verified.returncode == 0, 'Archive authentication failed. Check the identity and encrypted file.')
+    binary_pipeline(['age', '--decrypt', '--identity', key, archive],
+                    command + ['pg_restore', *connection, '--single-transaction', '--exit-on-error', '--no-owner', '--no-acl'],
+                    stages=('age decryption', 'pg_restore'))
+    return object_count(command, connection)
+
+
+def restore_isolated(config, environment, archive, service='app', identity=None):
+    key = private_file(identity) if identity else backup_key(environment)
+    archive = Path(archive)
+    require(key.is_file() and archive.is_file(), 'Backup archive or decryption key is missing.')
+    name = f'mushroom-{environment}-{service}-restore-{secrets.token_hex(5)}'
+    database = 'mushroom_restore_test'
+    image = f"postgres:{config['environments'][environment].get('pgMajor', '16') if service == 'app' else '16'}-alpine"
+    run(['docker', 'run', '-d', '--name', name, '--network', 'none', '--label',
+         'mushroom.restore-test=true', '-e', f'POSTGRES_DB={database}',
+         '-e', 'POSTGRES_PASSWORD=' + secrets.token_hex(32), image], capture=True, sensitive=True)
+    command = ['docker', 'exec', '-i', name]
+    connection = ['--username', 'postgres', '--dbname', database]
+    try:
+        for _ in range(60):
+            try:
+                run(command + ['pg_isready', '-h', '127.0.0.1', *connection], capture=True, sensitive=True)
+                break
+            except InstallationError:
+                time.sleep(1)
+        else:
+            raise InstallationError('Isolated PostgreSQL did not become ready within 60 seconds.')
+        count = restore_archive(command, connection, archive, key)
+        print(f'Restored {count} database objects in {name}. Remove when finished: sudo docker rm -fv {name}')
+    except BaseException:
+        run(['docker', 'rm', '-fv', name], capture=True, sensitive=True)
+        raise
 
 
 @contextmanager
@@ -1724,7 +2445,7 @@ def lock():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', nargs='?', choices=['install', 'panel', 'update', 'setup-chat', 'setup-storage', 'setup-analytics', 'setup-bale', 'register-bale-webhook', 'configure', 'doctor', 'verify', 'github', 'status', 'logs', 'restart', 'backup', 'restore', 'audit-env'])
+    parser.add_argument('command', nargs='?', choices=['install', 'panel', 'update', 'setup-chat', 'setup-storage', 'setup-analytics', 'setup-bale', 'register-bale-webhook', 'configure', 'doctor', 'verify', 'github', 'status', 'logs', 'restart', 'backup', 'restore', 'backup-list', 'backup-schedule', 'add-environment', 'monitor', 'audit-env'])
     parser.add_argument('--version', nargs='?', const='__current__', help='Print tool version, or select a release for update')
     parser.add_argument('--check', action='store_true', help='Only check for an installer update')
     parser.add_argument('--yes', action='store_true', help='Confirm an explicitly requested unattended downgrade')
@@ -1733,6 +2454,11 @@ def main():
     parser.add_argument('--current', action='store_true', help='Audit existing .env key names without displaying values')
     parser.add_argument('--archive', help='Encrypted .dump.age backup to restore into a separate test database')
     parser.add_argument('--target-url-file', help='Protected file containing the empty restore-test database URL')
+    parser.add_argument('--service', choices=('app', 'chat'), default='app')
+    parser.add_argument('--schedule', choices=('on', 'off'))
+    parser.add_argument('--scheduled', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--identity-file')
+    parser.add_argument('--offsite', action='store_true')
     args = parser.parse_args()
     if args.version == '__current__':
         print(updater.current_version(BUNDLE))
@@ -1746,6 +2472,17 @@ def main():
     require(os.uname().machine == 'x86_64', 'Current GitHub release images require an x86_64/amd64 host.')
     require('VERSION_ID="24.04"' in Path('/etc/os-release').read_text() and 'ID=ubuntu' in Path('/etc/os-release').read_text(),
             'Only Ubuntu 24.04 is supported.')
+    state_file = STATE / 'installation.json'
+    if args.command == 'panel' or (args.command is None and state_file.is_file()):
+        require(state_file.is_file(), 'Run install first.')
+        config = json.loads(state_file.read_text())
+        require(config.get('version') == 1, 'Unsupported installation state version.')
+        panel(config)
+        return
+    if args.command == 'monitor':
+        require(state_file.is_file(), 'Run install first.')
+        monitor(json.loads(state_file.read_text()))
+        return
     with lock():
         if args.command == 'update':
             try:
@@ -1765,8 +2502,8 @@ def main():
             save(config)
         if args.command == 'install':
             install(config)
-        elif args.command == 'panel':
-            panel(config)
+        elif args.command == 'add-environment':
+            add_environment(config, args.environment)
         elif args.command == 'setup-chat':
             setup_chat(config, args.environment)
         elif args.command == 'setup-storage':
@@ -1790,10 +2527,49 @@ def main():
         else:
             require(args.environment in config['environments'], 'Select an installed --environment.')
             if args.command == 'backup':
-                backup(config, args.environment)
+                if args.scheduled:
+                    if not service_backup_enabled(config, args.environment, args.service):
+                        return
+                    stamp = backup_directory(args.environment, args.service) / 'last-success'
+                    if stamp.is_file() and time.time() - stamp.stat().st_mtime < 23.5 * 3600:
+                        spec = config['environments'][args.environment]
+                        marker = stamp.parent / 'last-offsite-success'
+                        if spec.get('backupRemotePrefix') and (
+                                not marker.is_file() or marker.stat().st_mtime < max(
+                                    stamp.stat().st_mtime, offsite_config(args.environment).stat().st_mtime)):
+                            candidates = sorted(path for path in stamp.parent.glob('*.dump.age')
+                                                if BACKUP_NAME.fullmatch(path.name) and not path.is_symlink())
+                            if candidates:
+                                transfer_backup(config, args.environment, args.service, candidates[-1])
+                        return
+                    if args.service == 'app' and local_database(config, args.environment):
+                        spec = config['environments'][args.environment]
+                        root = Path(spec['home']) / 'mushroom' / args.environment
+                        deployed = root / ('workspace/deploy/vps/compose.dev.yaml' if args.environment == 'dev'
+                                           else 'state/current')
+                        if not deployed.is_file():
+                            print('Backup pending: waiting for the first deployment.')
+                            return
+                run_backup(config, args.environment, args.service)
                 return
             if args.command == 'restore':
-                restore(config, args.environment, args.archive, args.target_url_file)
+                require(args.archive, 'Select --archive or use the backup panel.')
+                if args.target_url_file:
+                    require(args.service == 'app' and not args.identity_file,
+                            'Explicit target URL uses the application database and saved identity.')
+                    restore(config, args.environment, args.archive, args.target_url_file)
+                else:
+                    if args.offsite:
+                        restore_offsite(config, args.environment, args.service, args.archive, args.identity_file)
+                    else:
+                        restore_isolated(config, args.environment, args.archive, args.service, args.identity_file)
+                return
+            if args.command == 'backup-list':
+                list_backups(args.environment, args.service)
+                return
+            if args.command == 'backup-schedule':
+                require(args.schedule, 'Specify --schedule on or off.')
+                set_backup_schedule(config, args.environment, args.service, args.schedule == 'on')
                 return
             command = compose_command(config, args.environment)
             command.extend({'status': ['ps'], 'logs': ['logs', '--tail', '100'], 'restart': ['restart']}[args.command])
