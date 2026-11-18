@@ -1211,7 +1211,8 @@ def configure(config, environment=None):
     print('Configuration saved. Rerun install if preparation is pending, then run the corresponding GitHub workflow to apply runtime changes.')
 
 
-PanelAction = namedtuple('PanelAction', 'key label handler needs_environment destructive', defaults=(False, False))
+PanelAction = namedtuple('PanelAction', 'key label handler needs_environment destructive audit_key',
+                         defaults=(False, False, None))
 
 
 def setup_chat(config, environment=None):
@@ -1286,7 +1287,7 @@ def environment_state(config, environment):
             'bale': 'enabled' if prepared and values.get('BALE_AUTH_ENABLED') == 'true' else 'disabled'}
 
 
-def render_panel(config, actions, note=None):
+def render_panel(config, actions, note=None, *, section=None, back_label='[q] quit'):
     """Pure rendering: state comes from files, never from secret values."""
     steps = config.get('steps') or {}
     title = f'Mushroom Panel - {config.get("domain", "unconfigured host")}'
@@ -1304,21 +1305,26 @@ def render_panel(config, actions, note=None):
         status.append(f'{environment}: ' + ' | '.join(flags))
 
     sections = [('STATUS', status)]
-    groups = {'ENVIRONMENT': {'1', '2', '3'},
-              'OPERATIONS': {'4', '5', '8', '9', '10', '11', '16', '17', '19', '21', '22'},
-              'CONFIGURATION & DEPLOYMENT': {'6', '7', '12', '13', '14', '15', '18', '20'}}
-    grouped = tuple((name, sorted(
-        (action for action in actions if str(action.key) in keys),
-        key=lambda action: int(action.key) if action.key.isdecimal() else float('inf')))
-                    for name, keys in groups.items())
-    known = set().union(*groups.values())
-    grouped += (('OTHER', sorted(
-        (action for action in actions if str(action.key) not in known),
-        key=lambda action: int(action.key) if action.key.isdecimal() else float('inf'))),)
+    if section:
+        grouped = ((section, sorted(actions,
+                                    key=lambda action: int(action.key) if action.key.isdecimal() else float('inf'))),)
+        sections = []
+    else:
+        groups = {'ENVIRONMENT': {'1', '2', '3'},
+                  'OPERATIONS': {'4', '5', '8', '9', '10', '11'},
+                  'CONFIGURATION & DEPLOYMENT': {'6', '7', '12', '13', '14', '15'}}
+        grouped = tuple((name, sorted(
+            (action for action in actions if str(action.key) in keys),
+            key=lambda action: int(action.key) if action.key.isdecimal() else float('inf')))
+                        for name, keys in groups.items())
+        known = set().union(*groups.values())
+        grouped += (('OTHER', sorted(
+            (action for action in actions if str(action.key) not in known),
+            key=lambda action: int(action.key) if action.key.isdecimal() else float('inf'))),)
     sections.extend((name, ['[' + action.key + '] ' + action.label
                             + ('  *' if action.destructive else '') for action in items])
                     for name, items in grouped if items)
-    sections.append(('EXIT', ['[q] quit']))
+    sections.append(('EXIT', [back_label]))
     content_width = max(56, len(title), *(len(row) for _, items in sections for row in items),
                         *(len(name) for name, _ in sections))
     border_top = '╔' + '═' * (content_width + 4) + '╗'
@@ -1783,6 +1789,28 @@ def monitor(config):
 
 
 
+def backup_menu_actions():
+    """Backup and recovery operations, kept together in their own panel."""
+    return [
+        PanelAction('1', 'Run encrypted backup now', panel_backup, True, False, '8'),
+        PanelAction('2', 'Configure backup schedule', panel_backup_settings, True, False, '16'),
+        PanelAction('3', 'Configure S3 / SFTP backup destination', panel_offsite, True, False, '18'),
+        PanelAction('4', 'Retry off-site transfer', panel_retry_transfer, True, False, '19'),
+        PanelAction('5', 'Import encrypted backup into an isolated database', panel_restore, True, False, '17'),
+        PanelAction('6', 'Export encrypted environment recovery package', panel_recovery_bundle, True, False, '21'),
+        PanelAction('7', 'Prepare or switch application database recovery', panel_application_recovery,
+                    True, False, '22'),
+        PanelAction('8', 'Configure monitoring and send a test alert', panel_monitoring, True, False, '20'),
+    ]
+
+
+def panel_backup_menu(config, environment=None, *, reader=None, emit=print, operation_lock=nullcontext):
+    """Open the backup/recovery submenu; each operation takes its own installer lock."""
+    run_panel(config, actions=backup_menu_actions(), reader=reader, emit=emit,
+              operation_lock=operation_lock, section='BACKUP & RECOVERY',
+              back_label='[q] back to main menu', return_prompt='\nPress Enter to return to backup menu: ')
+
+
 def panel_menu(config):
     """Every entry calls an existing operation; the panel adds no new behaviour."""
     actions = [
@@ -1793,15 +1821,8 @@ def panel_menu(config):
         PanelAction('5', 'Prepare chat engine and proxy', panel_chat, True, True),
         PanelAction('6', 'Configure domains/runtime', panel_configure, True),
         PanelAction('7', 'Configure dev object storage', panel_storage),
-        PanelAction('8', 'Run encrypted backup now', panel_backup, True),
+        PanelAction('8', 'Backup and recovery', panel_backup_menu),
         PanelAction('15', 'Add or resume an environment', panel_add_environment),
-        PanelAction('16', 'Configure backup schedule', panel_backup_settings, True),
-        PanelAction('18', 'Configure S3 / SFTP backup destination', panel_offsite, True),
-        PanelAction('22', 'Prepare or switch application database recovery', panel_application_recovery, True),
-        PanelAction('21', 'Export encrypted environment recovery package', panel_recovery_bundle, True),
-        PanelAction('20', 'Configure monitoring and send a test alert', panel_monitoring, True),
-        PanelAction('19', 'Retry off-site transfer', panel_retry_transfer, True),
-        PanelAction('17', 'Import encrypted backup into an isolated database', panel_restore, True),
         PanelAction('9', 'Print GitHub handoff summary', panel_github),
         PanelAction('10', 'Re-apply proxy/TLS configuration', panel_proxy, False, True),
         PanelAction('11', 'Resume full installation', panel_install, False, True),
@@ -1814,7 +1835,8 @@ def panel_menu(config):
     return actions
 
 
-def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print, operation_lock=nullcontext):
+def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print, operation_lock=nullcontext,
+              section=None, back_label='[q] quit', return_prompt='\nPress Enter to return to the main menu: '):
     """Menu loop with injectable input/output so it is testable without a terminal."""
     actions = panel_menu(config) if actions is None else actions
     reader = reader or terminal_input
@@ -1822,7 +1844,7 @@ def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print, op
     by_key = {str(action.key): action for action in actions}
     note = None
     while True:
-        emit(render_panel(config, actions, note))
+        emit(render_panel(config, actions, note, section=section, back_label=back_label))
         note = None
         try:
             selection = reader('Select: ').strip().lower()
@@ -1849,21 +1871,30 @@ def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print, op
                                               environment or 'install'):
             note = 'Cancelled; nothing changed.'
             continue
-        panel_audit(action.key, environment)
+        panel_audit(action.audit_key or action.key, environment)
         try:
             emit('\n--- ' + action.label + ' ---')
-            with operation_lock():
+            if action.handler is panel_backup_menu:
+                action.handler(config, environment, reader=reader, emit=emit, operation_lock=operation_lock)
                 if operation_lock is lock:
                     current = json.loads((STATE / 'installation.json').read_text())
                     config.clear()
                     config.update(current)
-                if action.handler is panel_logs:
-                    panel_logs(config, environment, reader=reader, emit=emit)
-                else:
-                    action.handler(config, environment)
-                if operation_lock is lock:
                     actions = panel_menu(config)
                     by_key = {str(entry.key): entry for entry in actions}
+            else:
+                with operation_lock():
+                    if operation_lock is lock:
+                        current = json.loads((STATE / 'installation.json').read_text())
+                        config.clear()
+                        config.update(current)
+                    if action.handler is panel_logs:
+                        panel_logs(config, environment, reader=reader, emit=emit)
+                    else:
+                        action.handler(config, environment)
+                    if operation_lock is lock and section is None:
+                        actions = panel_menu(config)
+                        by_key = {str(entry.key): entry for entry in actions}
         except (InstallationError, OSError) as error:
             note = f'{action.label} failed: {error}'
         except EOFError:
@@ -1872,9 +1903,9 @@ def run_panel(config, *, actions=None, reader=None, confirm=None, emit=print, op
             note = 'Cancelled.'
         else:
             note = None
-        if action.handler is not panel_logs and reader is terminal_input:
+        if action.handler not in (panel_logs, panel_backup_menu) and reader is terminal_input:
             try:
-                reader('\nPress Enter to return to the main menu: ')
+                reader(return_prompt)
             except EOFError:
                 return
 
