@@ -1,16 +1,16 @@
 {
   "upstreamRepository": "Drshirmardi/mushroom",
-  "upstreamCommit": "adbb43046e4e1b9514db9bb07878bc34d9b9f1b4",
+  "upstreamCommit": "41887f2e0d7b6a10aa6a2fbcaa2e6eceb5f6b98e",
   "files": {
-    "deploy/vps/dev-env.example": "d12a8d3f4c4dc91d40571cd8ceb974d3ddc68e7f1317204f4d3027f9f15b3f1a",
-    "deploy/vps/env.example": "ac82400d282d06f83342e7f9f88e9ce0a30b8f448b50885187d49b7811f50c95",
-    "deploy/vps/production-env.example": "f1c7735d185bbd56c5cc547903a1680a262b3f27ed224a3cf48dd6f93a440408",
+    "deploy/vps/dev-env.example": "f0941f97cb0c44df304790be9869eb61017d746bb2a22a0243580a2349e90103",
+    "deploy/vps/env.example": "3d6c2e5f502bffd6ae8d1d1d9e4022f978281fbab661c5ad7ccf1840c6a63dfe",
+    "deploy/vps/production-env.example": "a38a7f3e6c2e8cdca816b886dd05d036cae074aa134e2beca0e72601c1f68c91",
     "deploy/vps/analytics.dev.env.example": "69a46c6353cae3f21a5cd418698d84e5688a64485e1be33b3fd4e8463ce638b0",
     "config/ANALYTICS.md": "5f37f827299502e28ae37b7d410acab645439820380ef111d58a83218a438b51",
     "config/ANALYTICS-ACCEPTANCE.md": "e6a318f08f485d26935ecfa93b8dd1e066bc459548d61f9290ed7dbbfe8ba017",
     "deploy/vps/OBJECT-STORAGE.md": "e001c30d442d932637816558891a5f54ceb391f588e8da747c39116fa22064a5",
     "deploy/vps/sadad-callback.caddy.example": "bcb96ff0040f72809a0d0d1f4100d3f2ff5e1c8f0b8a549d95e59d9ad9cc44a1",
-    "deploy/sadad-live-runbook.md": "a1ba66e2ffcc2873173731639cf81d0c8b2c63d42ea6479f2ba3357764157488",
+    "deploy/sadad-live-runbook.md": "dbbffc1841efac2b0a862f8e0d5797a6337b91b2e67d2a28a5f48aa4fb0a2850",
     "deploy/ejabberd/compose.yaml": "78f4bbcdf6e5ab742d420a36276ef64ce78a4eab916e183a34c50d6a49850e6b",
     "deploy/ejabberd/compose.database.yaml": "e00850cb42f725d39c9871df5adc8f78a81fab535ab142969fd3e8b4aa26d54c",
     "deploy/ejabberd/env.example": "484c45ce090d5debac0aa937be984b907e9717ab85c4be780507bd01df8cc67f",
@@ -19,6 +19,9 @@
     "deploy/ejabberd/Dockerfile": "fe1e705efe5e694cc43e82c929fa490a84c115d1e267fd0252fef72c2e0ac350",
     "deploy/ejabberd/mod_sabz_chat.erl": "3f0cb5fe95f4340919f6393f1c379ecdd3bcf6363e5804e3a9458cf2ed2111f4",
     "deploy/ejabberd/ejabberd.yml": "5083ef2afc2fa781741af056f8fac2f0017c3c832cccbeb45bc200d3b50804f1",
-    "scripts/ejabberd-public-key.mjs": "48212f7bd8e5f52a5ed150f14189437908cd82489a9f897539c46410cca3fd2d"
+    "scripts/ejabberd-public-key.mjs": "48212f7bd8e5f52a5ed150f14189437908cd82489a9f897539c46410cca3fd2d",
+    "deploy/mirotalk/call.caddy.example": "b870570c4e4e569419015d69cd5f447329e77afb3458251cdde08d9d9d46ba8f",
+    "deploy/mirotalk/compose.yaml": "b88e9b06787812ee13ca5fb27d994235bad6fa50e6263eff90a2d47326762f04",
+    "deploy/mirotalk/env.example": "b853a5a9bb2d4bc4f9c06cbc3463d9e763183fafa8fac89745ec08847002d6ad"
   }
 }

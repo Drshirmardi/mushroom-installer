@@ -1,0 +1,14 @@
+# In the API site, put this before the catch-all reverse proxy.
+# respond /v1/chat/internal/* 404
+
+calls.example.com {
+    @mushroom path /mushroom-call.html /mushroom-call.js /mushroom-call.css /socket.io/*
+    handle @mushroom {
+        header Cache-Control "private, no-store"
+        header Referrer-Policy "no-referrer"
+        reverse_proxy 127.0.0.1:5444
+    }
+    handle {
+        respond 404
+    }
+}

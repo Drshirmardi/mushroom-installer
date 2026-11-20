@@ -1,5 +1,12 @@
 # Sadad live activation runbook
 
+## Current acceptance status
+
+The project owner has tested and accepted Sadad on the personal VPS `dev` environment. Treat that as completed dev
+acceptance. This runbook remains the procedure for reproducing the checks in staging or production; those environments
+have separate runtime settings and callback routing, so dev acceptance alone does not record their acceptance.
+Keep staging and production transport disabled until their own controlled verification is approved and recorded.
+
 The deployment switch and the administrator switch are separate by design:
 
 - `SADAD_TRANSPORT_MODE=live` permits this API deployment to contact Sadad. It does not enable a clinic provider.
@@ -8,7 +15,7 @@ The deployment switch and the administrator switch are separate by design:
 
 ## Shared dev values
 
-Use these non-secret values in `/home/deploy/mushroom/dev/runtime.env` after Sadad confirms the merchant redirect profile and the VPS outbound IP is registered:
+These are the non-secret values used by `/home/deploy/mushroom/dev/runtime.env` for the tested dev setup:
 
 ```dotenv
 PUBLIC_API_URL=https://dev-api.drshirmardi.com
@@ -23,7 +30,7 @@ SADAD_REDIRECT_PROFILE=PHP_VPG_PURCHASE
 
 Merchant ID, Terminal ID and Terminal Key are entered only in Dashboard. They are encrypted as payment-provider credential revisions and must not be placed in `runtime.env`, Compose, GitHub variables or logs. The AES payment-credential key remains in `secrets/payment_credential_encryption_key`.
 
-After editing `runtime.env`, rerun the normal `Sync shared dev VPS` workflow or run the repository's `deploy/vps/deploy-dev.sh` with the same deployment environment. Confirm API readiness, then open Dashboard and enable Sadad. Select it as the default adapter if checkout should use it.
+For staging or production, use that environment's own `runtime.env`, callback route and approved merchant configuration. Confirm API readiness before enabling the adapter in Dashboard. Never point the same callback address at two active environments; reconcile outstanding attempts before changing its route.
 
 ## Main-domain callback on shared dev
 
@@ -61,7 +68,7 @@ Validate the full Caddyfile and reload; deploy PAY02 to dev. The existing SADAD_
 
 Clicking gateway payment again resumes the same active attempt with its original token, amount and revision, even with a fresh idempotency key. CREATED/VERIFYING/REQUIRES_RECONCILIATION remain pending and never spawn another bank attempt. If an old token is no longer usable, an authorized administrator can find REDIRECT_READY in Dashboard billing reconciliation and run the existing Verify action. A definitive bank failure permits another attempt. Uncertain responses stay in reconciliation; only existing reviewed failure-resolution controls may release them. Never delete records, cancel a potentially paid attempt based only on a browser error, or manually mark a bank payment successful. Existing wallet/cancel guards and late callback verification remain intact.
 
-Local Chromium tests establish the outgoing Referer behavior; live PSP acceptance and exact merchant whitelist matching still require an authorized bank test. Registering the actual frontend domain remains an alternative if Sadad requires it.
+The owner-reported dev VPS acceptance includes a live Sadad test. For staging or production, confirm the merchant's exact callback/redirect allowlist and run the authorized acceptance transaction against the selected environment before recording its acceptance. Register the actual frontend domain if Sadad requires it.
 
 ## Live callback token casing (PAY03)
 
