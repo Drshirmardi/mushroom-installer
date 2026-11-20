@@ -1,0 +1,68 @@
+services:
+  api:
+    environment:
+      CHAT_DATABASE_URL: "postgresql://mushroom_communications:${CHAT_DB_PASSWORD:?}@communications-postgres:5432/mushroom_communications"
+      CHAT_VIDEO_ENABLED: "${CHAT_VIDEO_ENABLED:-false}"
+      CHAT_VIDEO_HEALTH_URL: http://mirotalk:8080
+      CHAT_VIDEO_ORIGIN: "${CHAT_VIDEO_ORIGIN:?}"
+      CHAT_VIDEO_SECRET: "${CHAT_VIDEO_SECRET:?}"
+      CHAT_TURN_SECRET: "${CHAT_TURN_SECRET:?}"
+      CHAT_STUN_URL: "${CHAT_STUN_URL:?}"
+      CHAT_TURN_URLS: "${CHAT_TURN_URLS:?}"
+      CHAT_S3_ENDPOINT: "${CHAT_S3_ENDPOINT:?}"
+      CHAT_S3_BUCKET: "${CHAT_S3_BUCKET:?}"
+      CHAT_S3_REGION: "${CHAT_S3_REGION:-us-east-1}"
+      CHAT_S3_ACCESS_KEY: "${CHAT_S3_ACCESS_KEY:?}"
+      CHAT_S3_SECRET_KEY: "${CHAT_S3_SECRET_KEY:?}"
+      CHAT_CLAMAV_HOST: chat-scanner
+    networks:
+      default: {}
+      communications-db: {}
+      communications-video: {}
+
+  communications-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mushroom_communications
+      POSTGRES_USER: mushroom_communications
+      POSTGRES_PASSWORD: "${CHAT_DB_PASSWORD:?}"
+    networks: [communications-db]
+    volumes: [communications_sql:/var/lib/postgresql/data]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, pg_isready, -U, mushroom_communications, -d, mushroom_communications]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  chat-scanner:
+    image: "${CHAT_CLAMAV_IMAGE:-clamav/clamav:1.4}"
+    volumes: [communications_scan:/var/lib/clamav]
+    restart: unless-stopped
+
+  mirotalk:
+    image: "${CHAT_VIDEO_IMAGE:?}"
+    environment:
+      CHAT_VIDEO_SECRET: "${CHAT_VIDEO_SECRET:?}"
+      MUSHROOM_VIDEO_LEASE_URL: http://api:3003/v1/chat/internal/video-lease
+      MUSHROOM_VIDEO_ORIGIN: "${CHAT_VIDEO_ORIGIN:?}"
+      ALLOWED_EMBED_ORIGINS: "${CHAT_VIDEO_EMBED_ORIGINS:?}"
+      HTTPS: "false"
+      OIDC_ENABLED: "false"
+      LOGS_DEBUG: "false"
+    networks: [communications-video, communications-edge]
+    ports: ["127.0.0.1:${CHAT_VIDEO_PROXY_PORT:-5444}:8080"]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+
+networks:
+  communications-db:
+    internal: true
+  communications-video:
+    internal: true
+  communications-edge: {}
+
+volumes:
+  communications_sql:
+  communications_scan:

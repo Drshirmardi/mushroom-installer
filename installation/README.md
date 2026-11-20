@@ -382,3 +382,19 @@ python -B -m unittest discover -s installation -p "test_*.py" -v
 ```
 
 Audit فقط نام کلیدهای غایب/نامعتبر را گزارش می‌کند و فایل‌های واقعی `.env` را تغییر نمی‌دهد. نصاب به `.env`های لپ‌تاپ وابسته نیست. تطبیق با schema واقعی API و Composeها در تست کنترل می‌شود. اجرای آزمایشی روی VPS خالی، دو انتشار متوالی، بازیابی بکاپ و پذیرش providerها پیش از دادهٔ واقعی الزامی است؛ تست‌های fixture معادل پذیرش سرور واقعی نیستند.
+# Preparing a MiroTalk environment
+
+For a Mushroom release using MiroTalk, create a root-readable private file with mode `0600`.
+Set `CHAT_VIDEO_IMAGE` to the published image digest and `CHAT_VIDEO_ORIGIN` to its dedicated
+HTTPS origin with DNS pointing to this server. Supply `CHAT_STUN_URL`, `CHAT_TURN_URLS`
+and the Coturn shared `CHAT_TURN_SECRET`. Supply the communications bucket's
+`CHAT_S3_ENDPOINT`, `CHAT_S3_BUCKET`, `CHAT_S3_ACCESS_KEY`, and `CHAT_S3_SECRET_KEY`.
+`CHAT_S3_REGION` defaults to `us-east-1`.
+
+Run `sudo mushroom setup-chat --environment dev --communications-env /root/communications.env`.
+For a fresh install pass the same options to `install`. Select the environment corresponding
+to the profile and use a separate bucket and credentials for each environment.
+The installer retains existing credentials, writes the communications Compose overlay, and
+configures the HTTPS proxy. GitHub deployment starts the services and applies the independent
+chat database migration. Calls start disabled. Enable them after checking signaling, TURN,
+and both participants, following the application's MiroTalk runbook.

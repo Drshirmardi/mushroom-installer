@@ -57,5 +57,4 @@ ARVAN_REGION=default
 ARVAN_REQUEST_TIMEOUT_MS=5000
 # secrets/arvan_access_key_id and secrets/arvan_secret_access_key (dev only).
 
-# Required before deploying the ejabberd-only chat branch: merge deploy/ejabberd/env.example
-# into runtime.env and install chat.compose.yaml as described in deploy/ejabberd/README.md.
+# See deploy/mirotalk/env.example and deploy/mirotalk/README.md for communications settings.

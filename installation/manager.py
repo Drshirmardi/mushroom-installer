@@ -38,6 +38,8 @@ BUNDLE_FILES = [
     'deploy/ejabberd/env.example', 'deploy/ejabberd/chat.caddy.example', 'deploy/ejabberd/README.md',
     'deploy/ejabberd/Dockerfile', 'deploy/ejabberd/mod_sabz_chat.erl', 'deploy/ejabberd/ejabberd.yml',
     'scripts/ejabberd-public-key.mjs',
+    'deploy/mirotalk/compose.yaml', 'deploy/mirotalk/call.caddy.example',
+    'deploy/mirotalk/env.example',
 ]
 STATE = Path('/etc/mushroom')
 ENVIRONMENTS = ('dev', 'staging', 'production-sim', 'production')
@@ -984,6 +986,69 @@ def prepare_chat(config, environment, *, root=None, owner=None):
     print(f'{environment}: chat engine ready; existing keys and data retained.')
 
 
+COMMUNICATIONS_INPUTS = {
+    'CHAT_VIDEO_IMAGE', 'CHAT_VIDEO_ORIGIN', 'CHAT_TURN_SECRET', 'CHAT_STUN_URL',
+    'CHAT_TURN_URLS', 'CHAT_S3_ENDPOINT', 'CHAT_S3_BUCKET', 'CHAT_S3_REGION',
+    'CHAT_S3_ACCESS_KEY', 'CHAT_S3_SECRET_KEY',
+}
+
+
+def prepare_communications(config, environment, *, root, owner, profile=None):
+    spec = config['environments'][environment]
+    root = Path(root)
+    runtime = root / 'runtime.env'
+    overlay = root / 'communications.compose.yaml'
+    values = load_env(runtime)
+    require(values.get('MUSHROOM_ENV_ROOT') == str(root)
+            and values.get('COMPOSE_PROJECT_NAME') == f'mushroom-{environment}',
+            'Communications environment boundary mismatch.')
+    require(not overlay.is_symlink(), 'Refusing symlinked communications overlay.')
+    if profile:
+        profile = Path(profile)
+        require(not profile.is_symlink() and profile.is_file() and profile.stat().st_mode & 0o077 == 0,
+                'Communications profile must be a private regular file (mode 0600).')
+        supplied = load_env(profile)
+        require(supplied.keys() <= COMMUNICATIONS_INPUTS, 'Unknown communications profile setting.')
+        for key, value in supplied.items():
+            require(values.get(key, value) == value, f'Existing setting preserved: {key}.')
+            values[key] = value
+    values.setdefault('CHAT_S3_REGION', 'us-east-1')
+    for key in sorted(COMMUNICATIONS_INPUTS):
+        require(re.fullmatch(r"""[^\s"'$#\\]+""", values.get(key, '')), f'Missing or invalid communications setting: {key}.')
+    require(re.fullmatch(r'[^@]+@sha256:[a-f0-9]{64}', values['CHAT_VIDEO_IMAGE']),
+            'Use an immutable MiroTalk image digest.')
+    origin = values['CHAT_VIDEO_ORIGIN']
+    require(origin.startswith('https://'), 'MiroTalk requires a dedicated HTTPS origin.')
+    host = hostname(origin.removeprefix('https://'))
+    require(origin == f'https://{host}' and all(host not in item['domains'].values()
+            for item in config['environments'].values()), 'MiroTalk requires a separate HTTPS hostname.')
+    require(values['CHAT_S3_ENDPOINT'].startswith('https://'), 'Communications object storage requires HTTPS.')
+    require(re.fullmatch(r'[A-Za-z0-9_-]{43,256}', values['CHAT_TURN_SECRET']),
+            'Invalid TURN shared secret.')
+    if not values.get('CHAT_DB_PASSWORD'):
+        require(not overlay.exists(), 'Restore the original communications database password.')
+        retained = run(['docker', 'volume', 'ls', '--filter',
+                        f'name=^mushroom-{environment}_communications_sql$', '--format', '{{.Name}}'],
+                       capture=True, sensitive=True)
+        require(not retained.strip(), 'Restore the original communications database password for the retained volume.')
+        values['CHAT_DB_PASSWORD'] = secrets.token_urlsafe(32)
+    values.setdefault('CHAT_VIDEO_SECRET', secrets.token_urlsafe(32))
+    for key in ('CHAT_DB_PASSWORD', 'CHAT_VIDEO_SECRET'):
+        require(re.fullmatch(r'[A-Za-z0-9_-]{43,256}', values[key]), f'Invalid communications credential: {key}.')
+    values.setdefault('CHAT_VIDEO_ENABLED', 'false')
+    values.setdefault('CHAT_VIDEO_PROXY_PORT', str(spec.get('basePort', PORTS[environment]) + 5))
+    require(values['CHAT_VIDEO_ENABLED'] in ('true', 'false'), 'Invalid video activation setting.')
+    port = values['CHAT_VIDEO_PROXY_PORT']
+    require(port.isdigit() and 1024 <= int(port) <= 65535, 'Invalid MiroTalk proxy port.')
+    values['CHAT_VIDEO_EMBED_ORIGINS'] = ','.join(
+        'https://' + spec['domains'][name] for name in ('app', 'dashboard'))
+    atomic_write(runtime, ''.join(f'{key}={value}\n' for key, value in values.items()))
+    os.chown(runtime, *owner)
+    if not overlay.exists():
+        atomic_write(overlay, (BUNDLE / 'deploy/mirotalk/compose.yaml').read_text())
+    os.chown(overlay, *owner)
+
+
 def configure_proxy(config, directory=None):
     directory = Path(directory) if directory is not None else Path('/etc/caddy')
     target = directory / 'Caddyfile'
@@ -1014,6 +1079,15 @@ def configure_proxy(config, directory=None):
             require(normalize(chat_file.read_text()) == normalize(snippets[environment]),
                     f'Custom chat proxy preserved at {chat_file}; review it before automated setup.')
         snippets[environment] = '# Managed by mushroom installation: chat\n' + snippets[environment]
+        if (root / 'communications.compose.yaml').is_file():
+            snippets[environment] += '\nrespond /v1/chat/internal/* 404\n'
+            origin = settings.get('CHAT_VIDEO_ORIGIN', '')
+            host = hostname(origin.removeprefix('https://'))
+            video_port = settings.get('CHAT_VIDEO_PROXY_PORT', '')
+            require(origin == f'https://{host}' and video_port.isdigit()
+                    and 1024 <= int(video_port) <= 65535, 'Invalid MiroTalk reverse proxy configuration.')
+            sites.append((BUNDLE / 'deploy/mirotalk/call.caddy.example').read_text()
+                         .replace('calls.example.com', host).replace('127.0.0.1:5444', f'127.0.0.1:{video_port}'))
         for service, domain in spec['domains'].items():
             offset = {'web': 0, 'app': 1, 'dashboard': 2, 'api': 3}[service]
             chat_import = f'  import {directory}/mushroom-chat/{environment}/*.caddy\n' if service == 'api' else ''
@@ -1101,7 +1175,7 @@ def firewall(config):
     run(['ufw', '--force', 'enable'], capture=True)
 
 
-def install(config, selected=None):
+def install(config, selected=None, *, communications_profile=None):
     steps = config['steps']
     if not steps.get('packages'):
         for line in run(['ss', '-H', '-ltnp'], capture=True).splitlines():
@@ -1149,7 +1223,11 @@ def install(config, selected=None):
         root = write_environment(config, environment, owner=owner, first_run=first_run, db_url=db, policy=policy)
         if environment == 'dev' and not spec.get('mediaConfigured'):
             configure_storage(config, environment)
-        prepare_chat(config, environment, root=root, owner=owner)
+        profile = communications_profile if selected == environment else None
+        if profile or load_env(root / 'runtime.env').get('CHAT_DB_PASSWORD'):
+            prepare_communications(config, environment, root=root, owner=owner, profile=profile)
+        else:
+            prepare_chat(config, environment, root=root, owner=owner)
         configure_backups(config, environment)
     # The current SSH port must already be listening; never edit sshd or close the current SSH session.
     firewall(config)
@@ -1215,12 +1293,20 @@ PanelAction = namedtuple('PanelAction', 'key label handler needs_environment des
                          defaults=(False, False, None))
 
 
-def setup_chat(config, environment=None):
+def setup_chat(config, environment=None, communications_profile=None):
     """Install the current bundle copy, then prepare one or every registered chat engine."""
     persist_bundle()
     for name in ([environment] if environment else list(config['environments'])):
         require(name in config['environments'], 'Select an installed --environment.')
-        prepare_chat(config, name)
+        spec = config['environments'][name]
+        root = Path(spec['home']) / 'mushroom' / name
+        if communications_profile or load_env(root / 'runtime.env').get('CHAT_DB_PASSWORD'):
+            import pwd
+            account = pwd.getpwnam(spec['user'])
+            prepare_communications(config, name, root=root,
+                                   owner=(account.pw_uid, account.pw_gid), profile=communications_profile)
+        else:
+            prepare_chat(config, name)
     configure_proxy(config)
     print('Chat prepared. Rerun the environment deployment, then mushroom verify.')
 
@@ -1943,10 +2029,15 @@ def compose_command(config, environment):
             '--env-file', env, '--file', compose]
     if (root / 'network.yaml').exists():
         args.extend(['--file', root / 'network.yaml'])
-    if (root / 'chat.compose.yaml').exists():
-        args.extend(['--file', root / 'chat.compose.yaml'])
-    if (root / 'chat.database.yaml').exists():
-        args.extend(['--file', root / 'chat.database.yaml'])
+    if env.is_file() and load_env(env).get('CHAT_DB_PASSWORD'):
+        overlay = root / 'communications.compose.yaml'
+        require(overlay.is_file(), f'{environment}: communications overlay missing; run setup-chat.')
+        args.extend(['--file', overlay])
+    else:
+        if (root / 'chat.compose.yaml').exists():
+            args.extend(['--file', root / 'chat.compose.yaml'])
+        if (root / 'chat.database.yaml').exists():
+            args.extend(['--file', root / 'chat.database.yaml'])
     if environment == 'production' and local_database(config, environment):
         args.extend(['--file', root / 'postgres.compose.yaml'])
     return args
@@ -1972,15 +2063,21 @@ def doctor(config, deployed=False):
                 path = root / 'secrets' / f'{prefix.lower()}_{suffix}'
                 require(not path.is_symlink() and path.is_file() and path.stat().st_size > 0,
                         'Selected storage credential file is missing/empty; run setup-storage --environment dev.')
-        require((root / 'chat.compose.yaml').is_file() and all(values.get(key) for key in (
-            'EJABBERD_SOURCE_ROOT', 'EJABBERD_IMAGE', 'EJABBERD_DOMAIN', 'EJABBERD_WEBSOCKET_URL',
-            'EJABBERD_SQL_HOST', 'EJABBERD_SQL_DB', 'EJABBERD_SQL_USER', 'EJABBERD_SQL_PASSWORD',
-            'EJABBERD_POLICY_SECRET', 'EJABBERD_PRIVATE_KEY_PATH', 'EJABBERD_PUBLIC_KEY_PATH', 'EJABBERD_PROXY_PORT')),
-            f'{environment}: chat preparation incomplete; run mushroom setup-chat --environment {environment}.')
-        require(all(Path(values[key]).is_file() for key in ('EJABBERD_PRIVATE_KEY_PATH', 'EJABBERD_PUBLIC_KEY_PATH')),
-                f'{environment}: chat key missing; restore its backup or complete setup-chat.')
-        require(values['EJABBERD_SQL_HOST'] != 'chat-postgres' or (root / 'chat.database.yaml').is_file(),
-                f'{environment}: managed chat database overlay missing; run setup-chat.')
+        if values.get('CHAT_DB_PASSWORD'):
+            require((root / 'communications.compose.yaml').is_file()
+                    and all(values.get(key) for key in COMMUNICATIONS_INPUTS | {
+                        'CHAT_VIDEO_SECRET', 'CHAT_VIDEO_EMBED_ORIGINS', 'CHAT_VIDEO_PROXY_PORT'}),
+                    f'{environment}: communications preparation incomplete; run mushroom setup-chat.')
+        else:
+            require((root / 'chat.compose.yaml').is_file() and all(values.get(key) for key in (
+                'EJABBERD_SOURCE_ROOT', 'EJABBERD_IMAGE', 'EJABBERD_DOMAIN', 'EJABBERD_WEBSOCKET_URL',
+                'EJABBERD_SQL_HOST', 'EJABBERD_SQL_DB', 'EJABBERD_SQL_USER', 'EJABBERD_SQL_PASSWORD',
+                'EJABBERD_POLICY_SECRET', 'EJABBERD_PRIVATE_KEY_PATH', 'EJABBERD_PUBLIC_KEY_PATH', 'EJABBERD_PROXY_PORT')),
+                f'{environment}: chat preparation incomplete; run mushroom setup-chat --environment {environment}.')
+            require(all(Path(values[key]).is_file() for key in ('EJABBERD_PRIVATE_KEY_PATH', 'EJABBERD_PUBLIC_KEY_PATH')),
+                    f'{environment}: chat key missing; restore its backup or complete setup-chat.')
+            require(values['EJABBERD_SQL_HOST'] != 'chat-postgres' or (root / 'chat.database.yaml').is_file(),
+                    f'{environment}: managed chat database overlay missing; run setup-chat.')
         require(all((root / 'secrets' / name).is_file() for name in SECRET_NAMES), f'{environment}: missing secret file.')
         for name in ('jwt_access_secret', 'refresh_token_pepper', 'otp_pepper'):
             require(re.fullmatch(r'[A-Za-z0-9_-]{43,256}', (root / 'secrets' / name).read_text().strip()), f'{environment}: invalid {name}.')
@@ -2023,7 +2120,8 @@ def audit_environment(repository, current=False):
     missing = keys - example.keys()
     require(not missing, 'API example lacks schema keys: ' + ', '.join(sorted(missing)))
     for relative in ('deploy/vps/compose.dev.yaml', 'deploy/vps/compose.yaml', 'compose.production.example.yaml'):
-        source = (repository / relative).read_text(encoding='utf-8') + '\n' + (repository / 'deploy/ejabberd/compose.yaml').read_text(encoding='utf-8')
+        overlay = 'deploy/mirotalk/compose.yaml' if 'CHAT_DATABASE_URL' in keys else 'deploy/ejabberd/compose.yaml'
+        source = (repository / relative).read_text(encoding='utf-8') + '\n' + (repository / overlay).read_text(encoding='utf-8')
         secret_keys = {name.upper() for name in SECRET_NAMES}
         absent = [key for key in keys - {'NODE_ENV', 'PORT'} if not re.search(rf'\b{key}(?:_FILE)?\b', source)
                   and not (relative.endswith('compose.dev.yaml') and key in secret_keys
@@ -2299,14 +2397,16 @@ def pg_client(config, environment, target=None, *, service='app', network='host'
     spec = config['environments'][environment]
     if target is None and service == 'chat':
         values = load_env(Path(spec['home']) / 'mushroom' / environment / 'runtime.env')
-        host = values.get('EJABBERD_SQL_HOST')
-        if host in ('postgres', 'chat-postgres'):
+        communications = bool(values.get('CHAT_DB_PASSWORD'))
+        host = 'communications-postgres' if communications else values.get('EJABBERD_SQL_HOST')
+        if host in ('postgres', 'chat-postgres', 'communications-postgres'):
             labels = ['--filter', f'label=com.docker.compose.project=mushroom-{environment}',
                       '--filter', f'label=com.docker.compose.service={host}']
             containers = run(['docker', 'ps', '-q', *labels], capture=True).split()
             require(len(containers) == 1, 'Expected one running PostgreSQL container for chat backup.')
-            yield ['docker', 'exec', '-i', containers[0]], [
-                '--username', values['EJABBERD_SQL_USER'], '--dbname', values['EJABBERD_SQL_DB']]
+            user, database = ('mushroom_communications', 'mushroom_communications') if communications else (
+                values['EJABBERD_SQL_USER'], values['EJABBERD_SQL_DB'])
+            yield ['docker', 'exec', '-i', containers[0]], ['--username', user, '--dbname', database]
             return
         host = hostname(host or '')
         user, password, db = (quote(values[key], safe='') for key in (
@@ -2485,6 +2585,7 @@ def main():
     parser.add_argument('--check', action='store_true', help='Only check for an installer update')
     parser.add_argument('--yes', action='store_true', help='Confirm an explicitly requested unattended downgrade')
     parser.add_argument('--environment', choices=ENVIRONMENTS)
+    parser.add_argument('--communications-env', help='Private file with MiroTalk image, HTTPS origin, TURN and S3 settings')
     parser.add_argument('--repository', default=str(BUNDLE))
     parser.add_argument('--current', action='store_true', help='Audit existing .env key names without displaying values')
     parser.add_argument('--archive', help='Encrypted .dump.age backup to restore into a separate test database')
@@ -2500,6 +2601,8 @@ def main():
         return
     if (args.version or args.check or args.yes) and args.command != 'update':
         parser.error('--version TAG, --check and --yes require update')
+    if args.communications_env and (args.command not in ('install', 'setup-chat') or not args.environment):
+        parser.error('--communications-env requires install or setup-chat and --environment')
     if args.command == 'audit-env':
         audit_environment(args.repository, args.current)
         return
@@ -2536,11 +2639,14 @@ def main():
             config = new_configuration()
             save(config)
         if args.command == 'install':
-            install(config)
+            require(not args.communications_env or args.environment in config['environments'],
+                    'Select a configured environment.')
+            install(config, selected=args.environment if args.communications_env else None,
+                    communications_profile=args.communications_env)
         elif args.command == 'add-environment':
             add_environment(config, args.environment)
         elif args.command == 'setup-chat':
-            setup_chat(config, args.environment)
+            setup_chat(config, args.environment, args.communications_env)
         elif args.command == 'setup-storage':
             require(args.environment == 'dev', 'Use setup-storage --environment dev; production storage remains disabled.')
             setup_storage(config)
