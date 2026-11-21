@@ -1,8 +1,10 @@
 """Guided communications configuration and checks. Secrets stay in private environment files."""
+from base64 import b64encode
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+from http.client import HTTPSConnection
 import ipaddress
 import json
 from pathlib import Path
@@ -263,6 +265,24 @@ def check_storage(values):
         s3_request(values, 'DELETE', key)
 
 
+def check_signaling(origin):
+    parsed = urlsplit(origin)
+    key = b64encode(secrets.token_bytes(16)).decode('ascii')
+    expected = b64encode(hashlib.sha1(
+        (key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode('ascii')
+    ).digest()).decode('ascii')
+    connection = HTTPSConnection(parsed.hostname, parsed.port, timeout=10)
+    try:
+        connection.request('GET', '/socket.io/?EIO=4&transport=websocket', headers={
+            'Connection': 'Upgrade', 'Upgrade': 'websocket', 'Origin': origin,
+            'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': key,
+        })
+        with connection.getresponse() as response:
+            return response.status == 101 and response.getheader('Sec-WebSocket-Accept') == expected
+    finally:
+        connection.close()
+
+
 def diagnose(m, config, environment):
     root = root_for(config, environment)
     values = m.load_env(root / 'runtime.env')
@@ -280,8 +300,7 @@ def diagnose(m, config, environment):
     except Exception:
         results['https'] = False
     try:
-        with urlopen(values['CHAT_VIDEO_ORIGIN'] + '/socket.io/?EIO=4&transport=polling', timeout=10) as response:
-            results['signaling'] = response.status == 200 and response.read(1024).startswith(b'0{')
+        results['signaling'] = check_signaling(values['CHAT_VIDEO_ORIGIN'])
     except Exception:
         results['signaling'] = False
     try:

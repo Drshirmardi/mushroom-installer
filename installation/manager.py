@@ -1074,9 +1074,12 @@ def prepare_communications(config, environment, *, root, owner, profile=None, al
     if overlay.exists():
         old_content = overlay.read_text(encoding='utf-8')
         old_hash = hashlib.sha256(old_content.replace('\r\n', '\n').encode()).hexdigest()
-        known_legacy_hash = 'b88e9b06787812ee13ca5fb27d994235bad6fa50e6263eff90a2d47326762f04'
+        known_legacy_hashes = {
+            'b88e9b06787812ee13ca5fb27d994235bad6fa50e6263eff90a2d47326762f04',
+            'd8970132b306d2b58fe34c8c6911b01a23a43a5695807ce3dae2a3e249ef3a63',
+        }
         require(old_content.replace('\r\n', '\n') == template.replace('\r\n', '\n')
-                or old_hash == known_legacy_hash,
+                or old_hash in known_legacy_hashes,
                 'Custom communications overlay preserved; compare with the bundled template before setup.')
         if old_content != template:
             atomic_write(overlay.with_suffix('.yaml.before-upgrade'), old_content)

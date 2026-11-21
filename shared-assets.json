@@ -1,6 +1,6 @@
 {
   "upstreamRepository": "Drshirmardi/mushroom",
-  "upstreamCommit": "5496e7bdfe4f387ca946c2f6360f9538db3181fe",
+  "upstreamCommit": "b9d59340825ea3898c79d15032d7baeb619fa38f",
   "files": {
     "deploy/vps/dev-env.example": "f0941f97cb0c44df304790be9869eb61017d746bb2a22a0243580a2349e90103",
     "deploy/vps/env.example": "3d6c2e5f502bffd6ae8d1d1d9e4022f978281fbab661c5ad7ccf1840c6a63dfe",
@@ -21,7 +21,7 @@
     "deploy/ejabberd/ejabberd.yml": "5083ef2afc2fa781741af056f8fac2f0017c3c832cccbeb45bc200d3b50804f1",
     "scripts/ejabberd-public-key.mjs": "48212f7bd8e5f52a5ed150f14189437908cd82489a9f897539c46410cca3fd2d",
     "deploy/mirotalk/call.caddy.example": "b870570c4e4e569419015d69cd5f447329e77afb3458251cdde08d9d9d46ba8f",
-    "deploy/mirotalk/compose.yaml": "d8970132b306d2b58fe34c8c6911b01a23a43a5695807ce3dae2a3e249ef3a63",
+    "deploy/mirotalk/compose.yaml": "716ba791bd83ad2913c92b2dabf02d0793608d7bde0db7c3819744071058e2ca",
     "deploy/mirotalk/env.example": "b853a5a9bb2d4bc4f9c06cbc3463d9e763183fafa8fac89745ec08847002d6ad"
   }
 }
