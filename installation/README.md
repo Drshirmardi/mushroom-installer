@@ -384,6 +384,41 @@ python -B -m unittest discover -s installation -p "test_*.py" -v
 Audit فقط نام کلیدهای غایب/نامعتبر را گزارش می‌کند و فایل‌های واقعی `.env` را تغییر نمی‌دهد. نصاب به `.env`های لپ‌تاپ وابسته نیست. تطبیق با schema واقعی API و Composeها در تست کنترل می‌شود. اجرای آزمایشی روی VPS خالی، دو انتشار متوالی، بازیابی بکاپ و پذیرش providerها پیش از دادهٔ واقعی الزامی است؛ تست‌های fixture معادل پذیرش سرور واقعی نیستند.
 # Preparing a MiroTalk environment
 
+Run `sudo mushroom setup-chat --environment dev` or select **Communications management**
+in the main panel. The guide reads the selected environment, suggests its existing
+storage endpoint and region, and asks for a dedicated private communications bucket
+and credentials. It saves an incomplete profile privately so an interrupted setup
+can resume. Secrets are retained during repeated setup. Use **Change configuration**
+for deliberate edits.
+
+The dev default builds the application's MiroTalk image on the VPS during the next
+GitHub dev deployment. You do not need to publish an image manually. Other environments
+and existing profiles can use an immutable registry digest. The installer prepares
+configuration and proxy settings; GitHub CD builds and starts the application services.
+
+Managed Coturn runs on the same VPS using an available listener and relay port range.
+Confirm the public IPv4 address, including any provider NAT mapping. The panel prints
+the required provider firewall ports. The default offers TURN over UDP and TCP without
+advertising TURN TLS. Create the call domain's DNS record on this VPS before checking HTTPS.
+
+After deployment, **Diagnose** separately checks DNS, HTTPS, Socket.IO signaling,
+chat database health and a real private S3 put/get/delete roundtrip. Configuration
+success alone does not mark these checks passed. The communications submenu also
+offers service status, recent redacted logs, per-service restart and call configuration.
+Keep the legacy engine and its volumes available until the new services pass acceptance.
+
+Under **Calls**, choose **trial** after automatic checks pass and run the environment
+deployment promptly. The API allows test calls until the stored UTC deadline, at most
+30 minutes, while permanent call activation remains off. Test two browsers on different
+networks with relay-only ICE. Return to **Calls**, select **enabled**, and confirm the
+successful two-party test. The panel checks that the deployed trial is active and that
+the tested configuration matches the current profile. Run deployment to apply permanent
+activation. Choosing **disabled** or cancelling browser confirmation saves a disabled
+setting for the next deployment. The panel distinguishes saved settings from running API
+state. Configuration edits invalidate acceptance and save calls as disabled.
+
+For unattended setup, the existing private profile interface remains available.
+
 For a Mushroom release using MiroTalk, create a root-readable private file with mode `0600`.
 Set `CHAT_VIDEO_IMAGE` to the published image digest and `CHAT_VIDEO_ORIGIN` to its dedicated
 HTTPS origin with DNS pointing to this server. Supply `CHAT_STUN_URL`, `CHAT_TURN_URLS`

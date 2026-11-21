@@ -25,12 +25,13 @@ import tempfile
 import time
 import unicodedata
 import updater
+import communications
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from urllib.request import Request, urlopen
 
 BUNDLE = Path(__file__).resolve().parent.parent
 BUNDLE_FILES = [
-    'installation/install.sh', 'installation/manager.py', 'installation/updater.py', 'installation/README.md',
+    'installation/install.sh', 'installation/manager.py', 'installation/communications.py', 'installation/updater.py', 'installation/README.md',
     'deploy/vps/dev-env.example', 'deploy/vps/env.example', 'deploy/vps/production-env.example',
     'deploy/vps/analytics.dev.env.example', 'config/ANALYTICS.md', 'config/ANALYTICS-ACCEPTANCE.md',
     'deploy/vps/OBJECT-STORAGE.md', 'deploy/vps/sadad-callback.caddy.example', 'deploy/sadad-live-runbook.md',
@@ -990,10 +991,17 @@ COMMUNICATIONS_INPUTS = {
     'CHAT_VIDEO_IMAGE', 'CHAT_VIDEO_ORIGIN', 'CHAT_TURN_SECRET', 'CHAT_STUN_URL',
     'CHAT_TURN_URLS', 'CHAT_S3_ENDPOINT', 'CHAT_S3_BUCKET', 'CHAT_S3_REGION',
     'CHAT_S3_ACCESS_KEY', 'CHAT_S3_SECRET_KEY',
+    'CHAT_VIDEO_IMAGE_MODE', 'CHAT_COMMUNICATIONS_SCHEMA', 'CHAT_TURN_MANAGED',
+    'CHAT_TURN_PUBLIC_IP', 'CHAT_TURN_LISTEN_PORT', 'CHAT_TURN_MIN_PORT', 'CHAT_TURN_MAX_PORT',
+}
+
+COMMUNICATIONS_OPTIONAL = {
+    'CHAT_VIDEO_IMAGE_MODE', 'CHAT_COMMUNICATIONS_SCHEMA', 'CHAT_TURN_MANAGED',
+    'CHAT_TURN_PUBLIC_IP', 'CHAT_TURN_LISTEN_PORT', 'CHAT_TURN_MIN_PORT', 'CHAT_TURN_MAX_PORT',
 }
 
 
-def prepare_communications(config, environment, *, root, owner, profile=None):
+def prepare_communications(config, environment, *, root, owner, profile=None, allow_changes=False):
     spec = config['environments'][environment]
     root = Path(root)
     runtime = root / 'runtime.env'
@@ -1010,13 +1018,21 @@ def prepare_communications(config, environment, *, root, owner, profile=None):
         supplied = load_env(profile)
         require(supplied.keys() <= COMMUNICATIONS_INPUTS, 'Unknown communications profile setting.')
         for key, value in supplied.items():
-            require(values.get(key, value) == value, f'Existing setting preserved: {key}.')
+            require(allow_changes or values.get(key, value) == value, f'Existing setting preserved: {key}.')
             values[key] = value
     values.setdefault('CHAT_S3_REGION', 'us-east-1')
-    for key in sorted(COMMUNICATIONS_INPUTS):
+    for key in sorted(COMMUNICATIONS_INPUTS - COMMUNICATIONS_OPTIONAL):
         require(re.fullmatch(r"""[^\s"'$#\\]+""", values.get(key, '')), f'Missing or invalid communications setting: {key}.')
-    require(re.fullmatch(r'[^@]+@sha256:[a-f0-9]{64}', values['CHAT_VIDEO_IMAGE']),
-            'Use an immutable MiroTalk image digest.')
+    image_mode = values.get('CHAT_VIDEO_IMAGE_MODE', 'registry')
+    require(image_mode in ('registry', 'build'), 'Invalid communications image mode.')
+    require(values.get('CHAT_TURN_MANAGED', 'false') in ('true', 'false'), 'Invalid managed TURN setting.')
+    require(values.get('CHAT_COMMUNICATIONS_SCHEMA', '2') == '2', 'Unsupported communications profile schema.')
+    if image_mode == 'build':
+        require(environment == 'dev' and re.fullmatch(r'mushroom-dev-mirotalk:[a-zA-Z0-9_.-]+', values['CHAT_VIDEO_IMAGE']),
+                'Build mode needs a dev MiroTalk source image.')
+    else:
+        require(re.fullmatch(r'[^@]+@sha256:[a-f0-9]{64}', values['CHAT_VIDEO_IMAGE']),
+                'Use an immutable MiroTalk image digest.')
     origin = values['CHAT_VIDEO_ORIGIN']
     require(origin.startswith('https://'), 'MiroTalk requires a dedicated HTTPS origin.')
     host = hostname(origin.removeprefix('https://'))
@@ -1036,16 +1052,43 @@ def prepare_communications(config, environment, *, root, owner, profile=None):
     for key in ('CHAT_DB_PASSWORD', 'CHAT_VIDEO_SECRET'):
         require(re.fullmatch(r'[A-Za-z0-9_-]{43,256}', values[key]), f'Invalid communications credential: {key}.')
     values.setdefault('CHAT_VIDEO_ENABLED', 'false')
-    values.setdefault('CHAT_VIDEO_PROXY_PORT', str(spec.get('basePort', PORTS[environment]) + 5))
+    if allow_changes:
+        values['CHAT_VIDEO_ENABLED'] = 'false'
+        values.pop('CHAT_VIDEO_TEST_UNTIL', None)
+    if not values.get('CHAT_VIDEO_PROXY_PORT'):
+        reserved = set()
+        for name, other in config['environments'].items():
+            other_runtime = Path(other.get('home', '')) / 'mushroom' / name / 'runtime.env'
+            if name != environment and other_runtime.is_file():
+                other_values = load_env(other_runtime)
+                if other_values.get('CHAT_VIDEO_PROXY_PORT'):
+                    reserved.add(int(other_values['CHAT_VIDEO_PROXY_PORT']))
+        values['CHAT_VIDEO_PROXY_PORT'] = str(communications.free_range(
+            sys.modules[__name__], spec.get('basePort', PORTS[environment]) + 5, 1, occupied=reserved))
     require(values['CHAT_VIDEO_ENABLED'] in ('true', 'false'), 'Invalid video activation setting.')
     port = values['CHAT_VIDEO_PROXY_PORT']
     require(port.isdigit() and 1024 <= int(port) <= 65535, 'Invalid MiroTalk proxy port.')
     values['CHAT_VIDEO_EMBED_ORIGINS'] = ','.join(
         'https://' + spec['domains'][name] for name in ('app', 'dashboard'))
+    template = (BUNDLE / 'deploy/mirotalk/compose.yaml').read_text(encoding='utf-8')
+    if overlay.exists():
+        old_content = overlay.read_text(encoding='utf-8')
+        old_hash = hashlib.sha256(old_content.replace('\r\n', '\n').encode()).hexdigest()
+        known_legacy_hash = 'b88e9b06787812ee13ca5fb27d994235bad6fa50e6263eff90a2d47326762f04'
+        require(old_content.replace('\r\n', '\n') == template.replace('\r\n', '\n')
+                or old_hash == known_legacy_hash,
+                'Custom communications overlay preserved; compare with the bundled template before setup.')
+        if old_content != template:
+            atomic_write(overlay.with_suffix('.yaml.before-upgrade'), old_content)
+    if values.get('CHAT_TURN_MANAGED') == 'true':
+        values['CHAT_TURN_UID'], values['CHAT_TURN_GID'] = map(str, owner)
+        values['COMPOSE_PROFILES'] = 'managed-turn'
+    elif values.get('COMPOSE_PROFILES') == 'managed-turn':
+        values.pop('COMPOSE_PROFILES')
+    communications.write_turn(sys.modules[__name__], root, values, owner)
     atomic_write(runtime, ''.join(f'{key}={value}\n' for key, value in values.items()))
     os.chown(runtime, *owner)
-    if not overlay.exists():
-        atomic_write(overlay, (BUNDLE / 'deploy/mirotalk/compose.yaml').read_text())
+    atomic_write(overlay, template)
     os.chown(overlay, *owner)
 
 
@@ -1224,8 +1267,12 @@ def install(config, selected=None, *, communications_profile=None):
         if environment == 'dev' and not spec.get('mediaConfigured'):
             configure_storage(config, environment)
         profile = communications_profile if selected == environment else None
+        if profile is None and sys.stdin.isatty() and not load_env(root / 'runtime.env').get('CHAT_DB_PASSWORD'):
+            profile = communications.guided_profile(sys.modules[__name__], config, environment)
         if profile or load_env(root / 'runtime.env').get('CHAT_DB_PASSWORD'):
-            prepare_communications(config, environment, root=root, owner=owner, profile=profile)
+            with communications.environment_lock(sys.modules[__name__], root):
+                prepare_communications(config, environment, root=root, owner=owner, profile=profile)
+                communications.receipt(sys.modules[__name__], environment, phase='configured', configured=True, verified=False)
         else:
             prepare_chat(config, environment, root=root, owner=owner)
         configure_backups(config, environment)
@@ -1293,22 +1340,26 @@ PanelAction = namedtuple('PanelAction', 'key label handler needs_environment des
                          defaults=(False, False, None))
 
 
-def setup_chat(config, environment=None, communications_profile=None):
-    """Install the current bundle copy, then prepare one or every registered chat engine."""
+def setup_chat(config, environment=None, communications_profile=None, *, edit=False):
+    """Prepare communications privately; CD deploys the application."""
     persist_bundle()
     for name in ([environment] if environment else list(config['environments'])):
         require(name in config['environments'], 'Select an installed --environment.')
         spec = config['environments'][name]
         root = Path(spec['home']) / 'mushroom' / name
-        if communications_profile or load_env(root / 'runtime.env').get('CHAT_DB_PASSWORD'):
-            import pwd
-            account = pwd.getpwnam(spec['user'])
+        import pwd
+        account = pwd.getpwnam(spec['user'])
+        with communications.environment_lock(sys.modules[__name__], root):
+            profile = communications_profile
+            if profile is None:
+                profile = communications.guided_profile(sys.modules[__name__], config, name, edit=edit)
             prepare_communications(config, name, root=root,
-                                   owner=(account.pw_uid, account.pw_gid), profile=communications_profile)
-        else:
-            prepare_chat(config, name)
-    configure_proxy(config)
-    print('Chat prepared. Rerun the environment deployment, then mushroom verify.')
+                                   owner=(account.pw_uid, account.pw_gid), profile=profile, allow_changes=edit)
+            communications.receipt(sys.modules[__name__], name, phase='proxy-pending',
+                                   configured=False, verified=False)
+            configure_proxy(config)
+            communications.receipt(sys.modules[__name__], name, phase='configured', configured=True, verified=False)
+    print('Communications configured. Run the environment deployment, then Communications > Diagnose.')
 
 
 def setup_storage(config):
@@ -1495,7 +1546,7 @@ def panel_restart(config, environment=None):
 
 
 def panel_chat(config, environment=None):
-    setup_chat(config, environment)
+    communications.menu(sys.modules[__name__], config, environment)
 
 
 def panel_configure(config, environment=None):
@@ -1904,7 +1955,7 @@ def panel_menu(config):
         PanelAction('2', 'Logs management', panel_logs, True),
         PanelAction('3', 'Doctor checks (DNS/TLS/secrets/deployment)', panel_doctor),
         PanelAction('4', 'Restart environment', panel_restart, True, True),
-        PanelAction('5', 'Prepare chat engine and proxy', panel_chat, True, True),
+        PanelAction('5', 'Communications management', panel_chat, True),
         PanelAction('6', 'Configure domains/runtime', panel_configure, True),
         PanelAction('7', 'Configure dev object storage', panel_storage),
         PanelAction('8', 'Backup and recovery', panel_backup_menu),
@@ -2013,8 +2064,10 @@ def compose_command(config, environment):
     spec = config['environments'][environment]
     root = Path(spec['home']) / 'mushroom' / environment
     if environment == 'dev':
-        compose = root / 'workspace/deploy/vps/compose.dev.yaml'
         env = root / 'runtime.env'
+        workspace = Path(load_env(env).get('DEV_WORKSPACE_PATH', str(root / 'workspace'))) if env.is_file() else root / 'workspace'
+        require(workspace.resolve().is_relative_to(root.resolve()), 'Dev workspace points outside the environment.')
+        compose = workspace / 'deploy/vps/compose.dev.yaml'
     else:
         state = root / 'state/current'
         require(state.exists(), f'{environment}: awaiting first successful GitHub deployment.')
@@ -2065,7 +2118,7 @@ def doctor(config, deployed=False):
                         'Selected storage credential file is missing/empty; run setup-storage --environment dev.')
         if values.get('CHAT_DB_PASSWORD'):
             require((root / 'communications.compose.yaml').is_file()
-                    and all(values.get(key) for key in COMMUNICATIONS_INPUTS | {
+                    and all(values.get(key) for key in (COMMUNICATIONS_INPUTS - COMMUNICATIONS_OPTIONAL) | {
                         'CHAT_VIDEO_SECRET', 'CHAT_VIDEO_EMBED_ORIGINS', 'CHAT_VIDEO_PROXY_PORT'}),
                     f'{environment}: communications preparation incomplete; run mushroom setup-chat.')
         else:
