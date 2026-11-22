@@ -85,21 +85,17 @@ bash /root/mushroom-installer/installation/install.sh
 
 ابزار و templateهای لازم در `/opt/mushroom-installer/` نصب می‌شوند و پس از نصب می‌توان از `sudo mushroom ...` استفاده کرد. وضعیت مراحل در `/etc/mushroom/installation.json` است. اجرای مجدد سکرت، رمز مدیر یا تنظیمات موجود را جایگزین نمی‌کند؛ فایل مفقود یا نامعتبر باید بررسی شود. برای تغییر تنظیمات runtime موجود، فایل عمومی همان محیط را اصلاح کنید و workflow مربوط را اجرا کنید؛ تغییر کلید رمزنگاری از مسیر rotation مستند انجام شود.
 
-## آماده‌سازی خودکار چت و ارتقای نصب قبلی
+## راه‌اندازی ارتباطات و ارتقای نصب قبلی
 
-نصب اولیه فایل‌های Compose چت، کلید RSA و JWK، رمزها، دیتابیس خصوصی موتور، ایمیج موتور و مسیر WebSocket در Caddy را آماده می‌کند. سورس محدود ساخت موتور در بسته موجود است؛ clone ریپوی خصوصی یا Node روی سرور لازم نیست. اولین ساخت به رجیستری‌های عمومی Docker دسترسی می‌خواهد.
-
-برای سرور نصب‌شده، بستهٔ جدید را پس از ادغام تغییرات نصاب/استقرار در مخزن منتقل و checksum آن را بررسی کنید. سپس از پوشهٔ بسته اجرا کنید:
+راه‌اندازی MiroTalk اختیاری است. برای پیکربندی ارتباطات، یک فایل profile خصوصی با مقادیر `CHAT_*` بسازید و فرمان زیر را اجرا کنید:
 
 ```bash
-sudo bash installation/install.sh setup-chat --environment dev
+sudo mushroom setup-chat --environment dev --communications-env /secure/path/communications.env
 ```
 
-این فرمان ابزار `/opt/mushroom-installer` را هم به‌روز می‌کند. برای اجرای دوباره بعدی، `sudo mushroom setup-chat --environment dev` کافی است. پس از موفقیت، workflow `Sync shared dev VPS` را دوباره اجرا و سپس `sudo mushroom verify` را اجرا کنید. آماده‌سازی چت، موفقیت deploy برنامه یا پذیرش واقعی پیام‌رسانی را پیش از اجرای آن‌ها اعلام نمی‌کند. سایر محیط‌ها با همان `--environment` انتخاب می‌شوند؛ حذف این گزینه همهٔ محیط‌های ثبت‌شده را آماده می‌کند.
+نصاب فایل `communications.compose.yaml`، دیتابیس اختصاصی ارتباطات و تنظیمات proxy مربوط به MiroTalk را آماده می‌کند. برای تنظیم تعاملی، `sudo mushroom setup-chat --environment dev` را اجرا کنید. پس از deploy، وضعیت را با `sudo mushroom doctor` بررسی کنید.
 
-رمزها و کلیدهای موجود حفظ می‌شوند و اجرای مجدد دادهٔ چت را حذف نمی‌کند. اگر کلید خصوصی یا credential محیط آماده‌شده گم شده باشد، ابزار بازیابی نسخهٔ اصلی را درخواست می‌کند. تنظیمات قبلی دیتابیس یا ایمیج خارجی حفظ می‌شوند؛ دیتابیس خارجیِ از قبل تنظیم‌شده باید توسط مالک آن آماده شده باشد.
-
-برای محیط تازه، PostgreSQL چت در کانتینر `chat-postgres` و volume اختصاصی همان Compose project ساخته می‌شود؛ پورتی از آن منتشر نمی‌شود و اتصال دیتابیس برنامه تغییر نمی‌کند. فایل `chat.database.yaml` باید در تمام deploy/rollback/operations همراه overlay چت بماند. ایمیج ساخته‌شدهٔ نصاب با `pull_policy: never` حفظ می‌شود؛ چهار ایمیج برنامه همچنان از مسیر انتشار قبلی می‌آیند. آرشیو موتور در volume جداست و بکاپ فعلی دیتابیس برنامه آن را پوشش نمی‌دهد؛ برای بازیابی کامل پیام‌رسانی باید از این دیتابیس نیز بکاپ مستقل نگه داشت.
+ارتقای نصاب دیگر سرویس یا compose قدیمی چت را آماده نمی‌کند. داده‌ها و credentialهای موجود در فایل‌های محیط حفظ می‌شوند؛ برای راه‌اندازی مجدد MiroTalk، profile ارتباطات را بررسی و فرمان بالا را اجرا کنید.
 
 ## فایل‌های هر محیط
 
@@ -192,7 +188,7 @@ sudo mushroom
 | `2` | ۱۰۰ خط آخر لاگ | `sudo mushroom logs --environment <env>` |
 | `3` | بررسی‌های سلامت | `sudo mushroom doctor` |
 | `4` | راه‌اندازی دوبارهٔ محیط | `sudo mushroom restart --environment <env>` |
-| `5` | آماده‌سازی موتور چت و پروکسی | `sudo mushroom setup-chat --environment <env>` |
+| `5` | راه‌اندازی اختیاری MiroTalk | `sudo mushroom setup-chat --environment <env>` |
 | `6` | تغییر دامنه/runtime | `sudo mushroom configure --environment <env>` |
 | `7` | ذخیره‌سازی شیء dev | `sudo mushroom setup-storage --environment dev` |
 | `8` | بکاپ رمزنگاری‌شدهٔ فوری | `sudo mushroom backup --environment <env>` |

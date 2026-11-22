@@ -19,9 +19,7 @@ class CommunicationsTests(unittest.TestCase):
         }, 'basePort': 3300}}}
         self.runtime = self.root / 'runtime.env'
         self.runtime.write_text(f'MUSHROOM_ENV_ROOT={self.root}\nCOMPOSE_PROJECT_NAME=mushroom-dev\n'
-                                'EJABBERD_SQL_PASSWORD=retained-fixture\n')
-        self.legacy_overlay = self.root / 'chat.compose.yaml'
-        self.legacy_overlay.write_text('legacy fixture\n')
+                                'EXISTING_SECRET=retained-fixture\n')
         self.profile = self.root / 'profile.env'
         self.profile.write_text(
             'CHAT_VIDEO_IMAGE=ghcr.io/example/mirotalk@sha256:' + '0' * 64 + '\n'
@@ -44,8 +42,7 @@ class CommunicationsTests(unittest.TestCase):
         self.assertEqual(manager.load_env(self.runtime), first)
         self.assertEqual(first['CHAT_VIDEO_ENABLED'], 'false')
         self.assertEqual(first['CHAT_VIDEO_EMBED_ORIGINS'], 'https://app.example.test,https://dashboard.example.test')
-        self.assertEqual(first['EJABBERD_SQL_PASSWORD'], 'retained-fixture')
-        self.assertEqual(self.legacy_overlay.read_text(), 'legacy fixture\n')
+        self.assertEqual(first['EXISTING_SECRET'], 'retained-fixture')
         self.assertIn('@communications-postgres:', (self.root / 'communications.compose.yaml').read_text())
         run.assert_called_once()
 
@@ -168,7 +165,7 @@ class CommunicationsTests(unittest.TestCase):
         self.config['environments']['dev']['home'] = str(self.root)
         runtime = self.root / 'mushroom/dev/runtime.env'
         runtime.parent.mkdir(parents=True)
-        runtime.write_text('CHAT_DB_PASSWORD=fixture\nEJABBERD_SQL_HOST=chat-postgres\n')
+        runtime.write_text('CHAT_DB_PASSWORD=fixture\n')
         with patch.object(manager, 'run', return_value='communications-container\n') as run:
             with manager.pg_client(self.config, 'dev', service='chat') as (command, connection):
                 self.assertEqual(command, ['docker', 'exec', '-i', 'communications-container'])
@@ -176,6 +173,15 @@ class CommunicationsTests(unittest.TestCase):
                     '--username', 'mushroom_communications', '--dbname', 'mushroom_communications',
                 ])
         self.assertIn('label=com.docker.compose.service=communications-postgres', run.call_args.args[0])
+
+    def test_chat_backup_requires_configured_communications_database(self):
+        self.config['environments']['dev']['home'] = str(self.root)
+        runtime = self.root / 'mushroom/dev/runtime.env'
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text('EXISTING_SECRET=retained-fixture\n')
+        with self.assertRaisesRegex(manager.InstallationError, 'Configure communications'):
+            with manager.pg_client(self.config, 'dev', service='chat'):
+                pass
 
     def test_production_compose_keeps_managed_postgres_with_communications(self):
         production = self.root / 'mushroom/production'

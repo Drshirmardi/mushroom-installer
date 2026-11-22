@@ -775,7 +775,7 @@ class InstallationTests(unittest.TestCase):
         self.assertFalse((directory / 'mushroom.caddy').exists())
 
     @unittest.skipUnless(shutil.which('caddy'), 'Caddy validation is exercised in Ubuntu CI')
-    def test_real_caddy_validates_generated_tls_and_websocket_proxy_configuration(self):
+    def test_real_caddy_validates_generated_tls_and_chat_event_proxy_configuration(self):
         directory = self.root / 'caddy'
         directory.mkdir()
         (directory / 'Caddyfile').write_text(':80 {\n root * /usr/share/caddy\n file_server\n}\n')
@@ -790,6 +790,7 @@ class InstallationTests(unittest.TestCase):
             manager.configure_proxy(self.config, directory)
         source = (directory / 'mushroom.caddy').read_text()
         self.assertIn('reverse_proxy 127.0.0.1:3303', source)
+        self.assertNotIn('/xmpp-websocket', source)
         self.assertIn('tls ops@example.test', source)
 
     @unittest.skipUnless(shutil.which('age') and shutil.which('age-keygen'), 'age tools are tested in the Ubuntu installer CI job')
@@ -935,28 +936,6 @@ class InstallationTests(unittest.TestCase):
             raise EOFError()
         with patch.object(manager, 'STATE', self.root):
             manager.run_panel(self.config, actions=[], reader=reader, emit=lambda text: None)
-
-
-    def test_chat_schema_probe_retries_transient_exec_failures(self):
-        results = iter([manager.InstallationError('not ready'), manager.InstallationError('auth'), '4\n'])
-
-        def command(args, **kwargs):
-            value = next(results)
-            if isinstance(value, Exception):
-                raise value
-            return value
-
-        with patch.object(manager, 'run', side_effect=command) as run, patch.object(manager.time, 'sleep'):
-            self.assertEqual(manager.wait_for_chat_schema(['docker', 'compose'], 'probe'), 4)
-        self.assertEqual(run.call_count, 3)
-
-    def test_chat_schema_probe_stops_after_bounded_attempts(self):
-        with patch.object(manager, 'run', side_effect=manager.InstallationError('unavailable')) as run, \
-                patch.object(manager.time, 'sleep') as sleep:
-            with self.assertRaisesRegex(manager.InstallationError, 'Chat SQL schema not ready'):
-                manager.wait_for_chat_schema(['docker', 'compose'], 'probe', attempts=3, delay=0)
-        self.assertEqual(run.call_count, 3)
-        self.assertEqual(sleep.call_count, 2)
 
     def test_docker_log_rotation_defaults_and_preserves_existing_file(self):
         target = self.root / 'daemon.json'

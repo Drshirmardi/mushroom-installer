@@ -31,7 +31,5 @@ jobs:
             docker run --rm -e BOOTSTRAP_LEGACY="$legacy" -v "$PWD:/repo:ro" -w /repo ubuntu:24.04 \
               bash -c 'apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 >/dev/null && bash scripts/test-bootstrap.sh'
           done
-      - name: Real chat engine and retained SQL rehearsal
-        run: sudo env INSTALLER_CHAT_DOCKER_TEST=1 INSTALLER_TEST_USER="$USER" python3 -B -m unittest discover -s installation -p 'test_chat_docker.py' -v
       - name: Real PostgreSQL encrypted backup and restore
         run: node scripts/test-installation-restore.mjs
