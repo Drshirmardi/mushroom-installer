@@ -192,14 +192,16 @@ def admin_details():
     return {'phone': phone, 'password': password, 'clinicName': clinic, 'timeZone': 'Asia/Tehran'}
 
 
-def media_configuration(values, root):
-    """Collect one dev profile; never put credentials in runtime.env or saved state."""
+def media_configuration(values, root, environment='dev'):
+    """Collect one media profile with credentials stored separately."""
+    original = values
     values = dict(values)
     root = Path(root)
     require(not root.is_symlink() and not (root / 'secrets').is_symlink(), 'Storage directories cannot be symlinks.')
     previous = values.get('PRODUCT_MEDIA_STORAGE_MODE', 'disabled')
-    mode = ask('Dev object storage: disabled / r2 (Cloudflare) / arvancloud (Arvan)', previous,
-               lambda v: choice(v, ['disabled', 'r2', 'arvancloud']))
+    modes = ['disabled', 'r2', 'arvancloud'] if environment == 'dev' else ['disabled', 'arvancloud']
+    mode = ask(f"{environment} object storage: {' / '.join(modes)}", previous if previous in modes else 'disabled',
+               lambda v: choice(v, modes))
     if previous in ('r2', 'arvancloud') and mode not in (previous, 'disabled'):
         print('Changing provider does not copy existing images. API and cleanup workers must use the same destination.')
         require(ask('Existing images copied at identical keys and media writes/cleanup paused (or no images exist)',
@@ -226,6 +228,11 @@ def media_configuration(values, root):
     values[f'{prefix}_ENDPOINT'] = ask(f'{prefix} S3 HTTPS endpoint (from the bucket region)', values.get(f'{prefix}_ENDPOINT', ''), endpoint)
     values[f'{prefix}_BUCKET'] = ask(f'{prefix} private bucket', values.get(f'{prefix}_BUCKET', ''),
                                     lambda v: v if re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]', v) else choice(v, []))
+    if previous == mode and any(values.get(f'{prefix}_{key}') != original.get(f'{prefix}_{key}')
+                                for key in ('ENDPOINT', 'BUCKET') if original.get(f'{prefix}_{key}')):
+        require(ask('Existing images copied at identical keys and media writes/cleanup paused (or no images exist)',
+                    'no', lambda v: choice(v, ['yes', 'no'])) == 'yes',
+                'Storage configuration unchanged. Prepare the transfer before changing the target.')
     if mode == 'r2':
         values['R2_REGION'] = 'auto'
     else:
@@ -258,21 +265,22 @@ def write_media_configuration(root, values, credentials, owner):
 
 
 def configure_storage(config, environment):
-    require(environment == 'dev' and environment in config['environments'], 'Object storage configuration currently supports --environment dev only; production stays disabled.')
+    require(environment in config['environments'], 'Object storage needs a prepared environment.')
     spec = config['environments'][environment]
     root = Path(spec['home']) / 'mushroom' / environment
     require(not (root / 'runtime.env').is_symlink() and (root / 'runtime.env').is_file()
             and (root / 'secrets').is_dir(), 'Finish initial environment preparation first; runtime.env must be a regular file.')
-    values, credentials = media_configuration(load_env(root / 'runtime.env'), root)
-    owner = (root.stat().st_uid, root.stat().st_gid)
-    write_media_configuration(root, values, credentials, owner)
+    with deployment_lock(root, environment) if (root / 'state/deploy.lock').exists() else nullcontext():
+        values, credentials = media_configuration(load_env(root / 'runtime.env'), root, environment)
+        owner = (root.stat().st_uid, root.stat().st_gid)
+        write_media_configuration(root, values, credentials, owner)
     spec.setdefault('runtime', {}).update({key: value for key, value in values.items()
                                          if key == 'PRODUCT_MEDIA_STORAGE_MODE' or key.startswith(('R2_', 'ARVAN_'))
                                          if not any(word in key for word in ('ACCESS_KEY', 'SECRET'))})
     spec['mediaConfigured'] = True
     save(config)
-    print(f"Dev object storage configured: {values['PRODUCT_MEDIA_STORAGE_MODE']}. Credentials remain in secrets/. "
-          'Deploy the matching provider-capable application and rerun the shared dev workflow to apply these settings. '
+    print(f"{environment} object storage configured: {values['PRODUCT_MEDIA_STORAGE_MODE']}. Credentials remain in secrets/. "
+          'Deploy an application version that supports this storage mode to apply these settings. '
           'No connectivity or upload success is claimed by configuration alone.')
 
 
@@ -1030,7 +1038,7 @@ def github_handoff(config):
                   'Keep packages private and grant this repository Actions access to its GHCR packages.',
                   'Transfer the private key securely, then remove its handoff copy after testing Actions SSH access.',
                   'SMS/payment remain disabled until separately configured and enabled in the Dashboard.',
-                  'Production media remains disabled by the existing application release policy.',
+                  'Production product media defaults to disabled. Use setup-storage and a compatible application release to enable Arvan.',
                   'Provider backup/PITR and off-site encrypted backup/key custody still require operational acceptance.'])
     report = '\n'.join(lines) + '\n'
     atomic_write(directory / 'GITHUB-SETUP.txt', report)
@@ -1196,11 +1204,11 @@ def setup_chat(config, environment=None, communications_profile=None, *, edit=Fa
     print('Communications configured. Run the environment deployment, then Communications > Diagnose.')
 
 
-def setup_storage(config):
-    """Install the current bundle copy, then save the dev object-storage profile."""
-    require('dev' in config['environments'], 'Object storage configuration needs an installed dev environment.')
+def setup_storage(config, environment='dev'):
+    """Install the current bundle copy, then save the selected object-storage profile."""
+    require(environment in config['environments'], 'Object storage needs a prepared environment.')
     persist_bundle()
-    configure_storage(config, 'dev')
+    configure_storage(config, environment)
 
 
 def setup_bale(config):
@@ -1388,7 +1396,7 @@ def panel_configure(config, environment=None):
 
 
 def panel_storage(config, environment=None):
-    setup_storage(config)
+    setup_storage(config, environment)
 
 
 def panel_analytics(config, environment=None):
@@ -1790,7 +1798,7 @@ def panel_menu(config):
         PanelAction('4', 'Restart environment', panel_restart, True, True),
         PanelAction('5', 'Communications management', panel_chat, True),
         PanelAction('6', 'Configure domains/runtime', panel_configure, True),
-        PanelAction('7', 'Configure dev object storage', panel_storage),
+        PanelAction('7', 'Configure product object storage', panel_storage, True),
         PanelAction('8', 'Backup and recovery', panel_backup_menu),
         PanelAction('15', 'Add or resume an environment', panel_add_environment),
         PanelAction('9', 'Print GitHub handoff summary', panel_github),
@@ -1801,7 +1809,7 @@ def panel_menu(config):
         PanelAction('14', 'Register Dev Bale webhook (after deployment)', panel_bale_webhook, True, True),
     ]
     if 'dev' not in config['environments']:
-        actions = [action for action in actions if action.handler not in (panel_storage, panel_analytics, panel_bale, panel_bale_webhook)]
+        actions = [action for action in actions if action.handler not in (panel_analytics, panel_bale, panel_bale_webhook)]
     return actions
 
 
@@ -1921,6 +1929,8 @@ def compose_command(config, environment):
         args.extend(['--file', overlay])
     if environment == 'production' and local_database(config, environment):
         args.extend(['--file', root / 'postgres.compose.yaml'])
+    if environment != 'dev' and (release / 'product-media.compose.yaml').is_file():
+        args.extend(['--file', release / 'product-media.compose.yaml'])
     return args
 
 
@@ -1934,16 +1944,16 @@ def doctor(config, deployed=False):
         values = load_env(root / 'runtime.env')
         validate_bale_runtime(values, root, environment)
         mode = values.get('PRODUCT_MEDIA_STORAGE_MODE', 'disabled')
-        require(mode in ('disabled', 'r2', 'arvancloud'), 'Unknown object storage mode; run setup-storage --environment dev.')
-        require(environment == 'dev' or mode == 'disabled', 'Object storage must remain disabled outside the supported dev runtime.')
+        modes = ('disabled', 'r2', 'arvancloud') if environment == 'dev' else ('disabled', 'arvancloud')
+        require(mode in modes, f'Unsupported storage mode; run setup-storage --environment {environment}.')
         if mode != 'disabled':
             prefix = 'R2' if mode == 'r2' else 'ARVAN'
             require(all(values.get(f'{prefix}_{name}') for name in ('ENDPOINT', 'BUCKET')),
-                    'Selected object storage profile is incomplete; run setup-storage --environment dev.')
+                    f'Selected object storage profile is incomplete; run setup-storage --environment {environment}.')
             for suffix in ('access_key_id', 'secret_access_key'):
                 path = root / 'secrets' / f'{prefix.lower()}_{suffix}'
                 require(not path.is_symlink() and path.is_file() and path.stat().st_size > 0,
-                        'Selected storage credential file is missing/empty; run setup-storage --environment dev.')
+                        f'Selected storage credential file is missing/empty; run setup-storage --environment {environment}.')
         if values.get('CHAT_DB_PASSWORD'):
             require((root / 'communications.compose.yaml').is_file()
                     and all(values.get(key) for key in (COMMUNICATIONS_INPUTS - COMMUNICATIONS_OPTIONAL) | {
@@ -2512,8 +2522,7 @@ def main():
         elif args.command == 'setup-chat':
             setup_chat(config, args.environment, args.communications_env)
         elif args.command == 'setup-storage':
-            require(args.environment == 'dev', 'Use setup-storage --environment dev; production storage remains disabled.')
-            setup_storage(config)
+            setup_storage(config, args.environment)
         elif args.command == 'setup-analytics':
             require(args.environment == 'dev', 'Use setup-analytics --environment dev; Production stays unchanged.')
             setup_analytics(config)

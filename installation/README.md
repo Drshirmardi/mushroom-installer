@@ -190,7 +190,7 @@ sudo mushroom
 | `4` | راه‌اندازی دوبارهٔ محیط | `sudo mushroom restart --environment <env>` |
 | `5` | راه‌اندازی اختیاری MiroTalk | `sudo mushroom setup-chat --environment <env>` |
 | `6` | تغییر دامنه/runtime | `sudo mushroom configure --environment <env>` |
-| `7` | ذخیره‌سازی شیء dev | `sudo mushroom setup-storage --environment dev` |
+| `7` | ذخیره‌سازی تصاویر محیط انتخاب‌شده | `sudo mushroom setup-storage --environment <environment>` |
 | `8` | بکاپ رمزنگاری‌شدهٔ فوری | `sudo mushroom backup --environment <env>` |
 | `9` | خلاصهٔ اتصال GitHub | `sudo mushroom github` |
 | `10` | اعمال دوبارهٔ پروکسی/TLS | بازتولید `mushroom.caddy` و reload کدی |
@@ -344,6 +344,12 @@ sudo mushroom setup-storage --environment dev
 این مرحله فقط تنظیمات را ذخیره می‌کند؛ برنامه را deploy نمی‌کند و موفقیت اتصال S3 را تأیید نمی‌کند.
 کد پشتیبانی از provider انتخاب‌شده باید روی dev مستقر شود؛ سپس workflow `Sync shared dev VPS` را اجرا
 کنید تا API تنظیمات را بگیرد. restart ساده برای تغییر environment کافی نیست.
+
+برای staging و production، پس از آماده شدن محیط، از `sudo mushroom setup-storage --environment staging`
+یا `sudo mushroom setup-storage --environment production` استفاده کنید. گزینه‌های این دو محیط
+`disabled` و `arvancloud` هستند. برای هر محیط باکت خصوصی و کلید مخصوص همان باکت را وارد کنید.
+نسخهٔ سازگار برنامه، قبل از تعویض API یک فایل موقت در باکت می‌نویسد، می‌خواند و حذف می‌کند.
+ابتدا همین مسیر را روی staging طی کنید و سپس نسخهٔ پذیرفته‌شده را برای production مستقر کنید.
 
 تعویض بین دو سرویس فعال فایل‌ها را منتقل نمی‌کند. منیجر پیش از تعویض، تأیید انتقال فایل‌ها با همان
 object key و توقف موقت نوشتن/پاک‌سازی، یا خالی‌بودن محیط را می‌گیرد. جزئیات انتقال و تست واقعی در

@@ -280,7 +280,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(credentials, {})
         self.assertEqual(key.read_text(), 'retained-key')
 
-    def test_storage_rejects_symlink_secret_and_nondev_configuration(self):
+    def test_storage_rejects_symlink_secret_and_unprepared_environment(self):
         with self.assertRaises(manager.InstallationError):
             manager.configure_storage(self.config, 'production')
         root = self.write('dev')
@@ -292,6 +292,19 @@ class InstallationTests(unittest.TestCase):
         with patch('manager.ask', side_effect=['arvancloud', 'https://s3.example.test', 'private-bucket', 'default', '5000']), self.assertRaises(manager.InstallationError):
             manager.media_configuration(manager.load_env(root / 'runtime.env'), root)
         self.assertEqual(target.read_text(), 'preserve')
+
+    def test_production_arvan_settings_store_keys_only_in_secret_files(self):
+        root = Path(self.config['environments']['production']['home']) / 'mushroom/production'
+        (root / 'secrets').mkdir(parents=True)
+        (root / 'runtime.env').write_text('PRODUCT_MEDIA_STORAGE_MODE=disabled\n')
+        answers = ['arvancloud', 'https://s3.example.test', 'private-bucket', 'default',
+                   '5000', 'synthetic-arvan-id', 'synthetic-arvan-secret']
+        with patch('manager.ask', side_effect=answers), patch('manager.os.chown', create=True), patch('manager.save'):
+            manager.configure_storage(self.config, 'production')
+        self.assertEqual(manager.load_env(root / 'runtime.env')['PRODUCT_MEDIA_STORAGE_MODE'], 'arvancloud')
+        self.assertEqual((root / 'secrets/arvan_secret_access_key').read_text(), 'synthetic-arvan-secret')
+        self.assertNotIn('synthetic-arvan', (root / 'runtime.env').read_text())
+        self.assertNotIn('synthetic-arvan', json.dumps(self.config))
 
     def test_bad_terminal_bytes_retry_without_accepting_or_printing_them(self):
         bad_bytes = UnicodeDecodeError('utf-8', b'private\xffvalue', 7, 8, 'invalid start byte')
@@ -853,7 +866,7 @@ class InstallationTests(unittest.TestCase):
         visible_keys = [int(value) for value in re.findall(r'\[(\d+)\]', operations)]
         self.assertEqual(visible_keys, sorted(visible_keys))
 
-    def test_panel_menu_keys_are_unique_and_storage_needs_dev(self):
+    def test_panel_menu_keys_are_unique_and_storage_selects_an_environment(self):
         menu = manager.panel_menu(self.config)
         self.assertEqual(len({action.key for action in menu}), len(menu))
         self.assertTrue(all(callable(action.handler) and action.label for action in menu))
@@ -861,8 +874,8 @@ class InstallationTests(unittest.TestCase):
         self.assertTrue(any(action.handler is manager.panel_bale for action in menu))
         self.assertTrue(any(action.handler is manager.panel_bale_webhook and action.destructive for action in menu))
         production_only = {'environments': {'production': self.config['environments']['production']}}
-        self.assertFalse(any(action.handler is manager.panel_storage
-                             for action in manager.panel_menu(production_only)))
+        self.assertTrue(any(action.handler is manager.panel_storage
+                            for action in manager.panel_menu(production_only)))
         self.assertFalse(any(action.handler in (manager.panel_bale, manager.panel_bale_webhook)
                              for action in manager.panel_menu(production_only)))
 
