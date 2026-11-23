@@ -77,6 +77,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(values['R2_BUCKET'], 'preserved')
         self.assertEqual(values['PUBLIC_ANALYTICS_CONSENT'], 'denied')
         self.assertEqual(values['ANALYTICS_SERVER_ENABLED'], 'false')
+        self.assertNotIn('GA4_API_SECRET_FILE', values)
         self.assertEqual(credentials, {})
         self.assertEqual(path.read_text(), 'preserved')
 
@@ -90,10 +91,26 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual(credentials, {} if replace == 'no' else {'ga4_api_secret': 'replacement'})
             self.assertEqual(path.read_text(), 'preserved')
 
-    def test_analytics_rejects_invalid_values_and_nondev_before_writing(self):
+    def test_analytics_supports_production_and_staging_with_environment_scoped_secret(self):
         for env in ['production', 'staging']:
-            with self.assertRaises(manager.InstallationError):
-                manager.configure_analytics(self.config, env)
+            with self.subTest(environment=env):
+                root = Path(self.config['environments'][env]['home']) / 'mushroom' / env
+                (root / 'secrets').mkdir(parents=True)
+                (root / 'runtime.env').write_text(f'MUSHROOM_ENVIRONMENT={env}\n')
+                measurement = 'G-PRODUCTION123' if env == 'production' else 'G-STAGING123'
+                with patch('manager.ask', side_effect=['server', measurement, 'false', 'synthetic-ga-secret']), \
+                        patch('manager.os.chown', create=True), patch('manager.save'), \
+                        redirect_stdout(io.StringIO()) as output:
+                    manager.configure_analytics(self.config, env)
+                values = manager.load_env(root / 'runtime.env')
+                self.assertEqual(values['ANALYTICS_SERVER_ENABLED'], 'true')
+                self.assertEqual(values['PUBLIC_GA4_MEASUREMENT_ID'], measurement)
+                self.assertEqual(values['GA4_API_SECRET_FILE'], '/run/secrets/ga4_api_secret')
+                self.assertEqual((root / 'secrets/ga4_api_secret').read_text(), 'synthetic-ga-secret')
+                self.assertNotIn('synthetic-ga-secret', (root / 'runtime.env').read_text())
+                self.assertNotIn('synthetic-ga-secret', output.getvalue())
+
+    def test_analytics_rejects_symlinked_secret_and_invalid_values(self):
         root = self.write('dev')
         with patch('manager.terminal_input', side_effect=['bad\nsecret', 'valid-secret']), redirect_stdout(io.StringIO()) as output:
             self.assertEqual(manager.ask('hidden', secret=True, validator=manager.analytics_secret), 'valid-secret')
@@ -572,6 +589,22 @@ class InstallationTests(unittest.TestCase):
         (root / 'current').write_text('/tmp/foreign-release')
         with self.assertRaises(manager.InstallationError):
             manager.compose_command(self.config, 'production')
+
+    def test_panel_compose_uses_analytics_overlay_from_active_release(self):
+        home = Path(self.config['environments']['production']['home'])
+        root = home / 'mushroom/production'
+        release = root / 'releases/current'
+        release.mkdir(parents=True)
+        (root / 'state').mkdir()
+        (root / 'state/current').write_text(str(release))
+        (release / 'compose.yaml').touch()
+        overlay = release / 'analytics.compose.yaml'
+
+        self.assertNotIn(overlay, manager.compose_command(self.config, 'production'))
+        (release / 'product-media.compose.yaml').touch()
+        overlay.touch()
+        command = manager.compose_command(self.config, 'production')
+        self.assertEqual(command[-4:], ['--file', release / 'product-media.compose.yaml', '--file', overlay])
 
     def test_restore_rejects_real_database_without_running_commands(self):
         target = self.root / 'target.env'

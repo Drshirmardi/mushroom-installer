@@ -4,10 +4,10 @@
   "files": {
     "deploy/vps/dev-env.example": "f0941f97cb0c44df304790be9869eb61017d746bb2a22a0243580a2349e90103",
     "deploy/vps/env.example": "3d6c2e5f502bffd6ae8d1d1d9e4022f978281fbab661c5ad7ccf1840c6a63dfe",
-    "deploy/vps/production-env.example": "a38a7f3e6c2e8cdca816b886dd05d036cae074aa134e2beca0e72601c1f68c91",
+    "deploy/vps/production-env.example": "538f08b7aba74d4da4dae1679cd379f919d404b40237f01049f7a44f415836c9",
     "deploy/vps/analytics.dev.env.example": "69a46c6353cae3f21a5cd418698d84e5688a64485e1be33b3fd4e8463ce638b0",
-    "config/ANALYTICS.md": "5f37f827299502e28ae37b7d410acab645439820380ef111d58a83218a438b51",
-    "config/ANALYTICS-ACCEPTANCE.md": "e6a318f08f485d26935ecfa93b8dd1e066bc459548d61f9290ed7dbbfe8ba017",
+    "config/ANALYTICS.md": "c757d972e2c0efccad8c1deb378ba345934e7b7a671b5c05e069d45a1161d343",
+    "config/ANALYTICS-ACCEPTANCE.md": "b77fee1f4bc23bb799c74560d0662052ba997e3acc1adf82fb8597a942f50eef",
     "deploy/vps/OBJECT-STORAGE.md": "e001c30d442d932637816558891a5f54ceb391f588e8da747c39116fa22064a5",
     "deploy/vps/sadad-callback.caddy.example": "bcb96ff0040f72809a0d0d1f4100d3f2ff5e1c8f0b8a549d95e59d9ad9cc44a1",
     "deploy/sadad-live-runbook.md": "dbbffc1841efac2b0a862f8e0d5797a6337b91b2e67d2a28a5f48aa4fb0a2850",

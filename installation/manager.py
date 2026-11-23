@@ -290,21 +290,22 @@ def analytics_secret(value):
     return value
 
 
-def analytics_configuration(values, root):
-    """Controlled dev collection only; credentials never enter public runtime/state."""
+def analytics_configuration(values, root, environment='dev'):
+    """Configure one environment without putting the API secret in public runtime/state."""
     values = dict(values)
     root = Path(root)
     require(not root.is_symlink() and not (root / 'secrets').is_symlink(), 'Analytics directories cannot be symlinks.')
     previous = 'server' if values.get('ANALYTICS_SERVER_ENABLED') == 'true' else (
         'browser' if values.get('PUBLIC_ANALYTICS_CONSENT') == 'granted' else 'disabled')
-    mode = ask('Controlled Dev analytics: disabled / browser / server', previous,
+    mode = ask(f'{environment} GA4 analytics: disabled / browser / server', previous,
                lambda value: choice(value, ['disabled', 'browser', 'server']))
     values.update(PUBLIC_ANALYTICS_CONSENT='denied', PUBLIC_ANALYTICS_DEBUG='false', ANALYTICS_SERVER_ENABLED='false')
+    values.pop('GA4_API_SECRET_FILE', None)
     if mode == 'disabled':
         return values, {}
-    values['PUBLIC_GA4_MEASUREMENT_ID'] = ask('Dev GA4 Measurement ID (G-...)', values.get('PUBLIC_GA4_MEASUREMENT_ID', ''),
+    values['PUBLIC_GA4_MEASUREMENT_ID'] = ask(f'{environment} GA4 Measurement ID (G-...)', values.get('PUBLIC_GA4_MEASUREMENT_ID', ''),
         lambda value: value if re.fullmatch(r'G-[A-Z0-9]{1,62}', value) else choice(value, []))
-    values['PUBLIC_ANALYTICS_DEBUG'] = ask('Enable Dev DebugView: true / false', 'true',
+    values['PUBLIC_ANALYTICS_DEBUG'] = ask(f'Enable {environment} DebugView: true / false', 'false',
         lambda value: choice(value, ['true', 'false']))
     credentials = {}
     if mode == 'server':
@@ -316,28 +317,41 @@ def analytics_configuration(values, root):
             credentials['ga4_api_secret'] = ask('GA4 API secret (hidden)', secret=True, validator=analytics_secret)
         else:
             analytics_secret(path.read_text().strip())
-        values['GA4_API_SECRET_FILE'] = '/run/optional-secrets/ga4_api_secret'
+        values['GA4_API_SECRET_FILE'] = ('/run/optional-secrets/ga4_api_secret' if environment == 'dev'
+                                         else '/run/secrets/ga4_api_secret')
         values['ANALYTICS_SERVER_ENABLED'] = 'true'
     values['PUBLIC_ANALYTICS_CONSENT'] = 'granted'
     return values, credentials
 
 
 def configure_analytics(config, environment):
-    require(environment == 'dev' and environment in config['environments'], 'Use setup-analytics --environment dev; other environments remain unchanged.')
+    require(environment in config['environments'], 'Analytics setup needs a prepared environment.')
     root = Path(config['environments'][environment]['home']) / 'mushroom' / environment
     require(not (root / 'runtime.env').is_symlink() and (root / 'runtime.env').is_file()
             and (root / 'secrets').is_dir(), 'Finish initial Dev environment preparation first.')
-    values, credentials = analytics_configuration(load_env(root / 'runtime.env'), root)
-    owner = (root.stat().st_uid, root.stat().st_gid)
-    # Preserve the existing atomic private-file writer and activate only after the secret exists.
-    if values.get('ANALYTICS_SERVER_ENABLED') == 'true' and not credentials:
-        path = root / 'secrets/ga4_api_secret'
-        os.chmod(path, 0o600)
-        os.chown(path, *owner)
-    write_media_configuration(root, values, credentials, owner)
+    with deployment_lock(root, environment) if (root / 'state/deploy.lock').exists() else nullcontext():
+        values, credentials = analytics_configuration(load_env(root / 'runtime.env'), root, environment)
+        measurement_id = values.get('PUBLIC_GA4_MEASUREMENT_ID', '')
+        if values.get('PUBLIC_ANALYTICS_CONSENT') == 'granted' and measurement_id:
+            for other_environment, other_spec in config['environments'].items():
+                if other_environment == environment:
+                    continue
+                other_runtime = Path(other_spec['home']) / 'mushroom' / other_environment / 'runtime.env'
+                if other_runtime.is_file() and not other_runtime.is_symlink():
+                    other_id = load_env(other_runtime).get('PUBLIC_GA4_MEASUREMENT_ID', '')
+                    require(other_id != measurement_id,
+                            f'Use a dedicated GA4 Measurement ID; this one is already configured for {other_environment}.')
+        owner = (root.stat().st_uid, root.stat().st_gid)
+        # Preserve the existing atomic private-file writer and activate only after the secret exists.
+        if values.get('ANALYTICS_SERVER_ENABLED') == 'true' and not credentials:
+            path = root / 'secrets/ga4_api_secret'
+            os.chmod(path, 0o600)
+            os.chown(path, *owner)
+        write_media_configuration(root, values, credentials, owner)
+    config['environments'][environment]['analyticsConfigured'] = True
     save(config)  # No analytics credential is copied into installation.json.
-    print('Dev analytics configuration saved. Secret stays in secrets/ga4_api_secret. '
-          'Deploy this analytics-capable branch and rerun the Dev workflow to apply settings. '
+    print(f'{environment} GA4 configuration saved. Secret stays in that environment\'s secrets/ga4_api_secret. '
+          f'Run the {environment} application deployment workflow to apply settings. '
           'Configuration alone does not verify GA4 receipt.')
 
 
@@ -1228,10 +1242,10 @@ def setup_bale_webhook(config):
     register_bale_webhook(config, 'dev')
 
 
-def setup_analytics(config):
-    require('dev' in config['environments'], 'Analytics setup needs an installed dev environment.')
+def setup_analytics(config, environment='dev'):
+    require(environment in config['environments'], 'Analytics setup needs a prepared environment.')
     persist_bundle()
-    configure_analytics(config, 'dev')
+    configure_analytics(config, environment)
 
 
 def panel_audit(action, environment=None):
@@ -1406,7 +1420,7 @@ def panel_storage(config, environment=None):
 
 
 def panel_analytics(config, environment=None):
-    setup_analytics(config)
+    setup_analytics(config, environment)
 
 
 def panel_bale(config, environment=None):
@@ -1810,12 +1824,14 @@ def panel_menu(config):
         PanelAction('9', 'Print GitHub handoff summary', panel_github),
         PanelAction('10', 'Re-apply proxy/TLS configuration', panel_proxy, False, True),
         PanelAction('11', 'Resume full installation', panel_install, False, True),
-        PanelAction('12', 'Configure dev analytics (hidden API secret)', panel_analytics),
+        PanelAction('12', 'Configure GA4 analytics (hidden API secret)', panel_analytics, True),
         PanelAction('13', 'Configure Dev Bale Mini App (private bot token)', panel_bale, True),
         PanelAction('14', 'Register Dev Bale webhook (after deployment)', panel_bale_webhook, True, True),
     ]
     if 'dev' not in config['environments']:
-        actions = [action for action in actions if action.handler not in (panel_analytics, panel_bale, panel_bale_webhook)]
+        actions = [action for action in actions if action.handler not in (panel_bale, panel_bale_webhook)]
+    if not config['environments']:
+        actions = [action for action in actions if action.handler is not panel_analytics]
     return actions
 
 
@@ -1935,8 +1951,11 @@ def compose_command(config, environment):
         args.extend(['--file', overlay])
     if environment == 'production' and local_database(config, environment):
         args.extend(['--file', root / 'postgres.compose.yaml'])
-    if environment != 'dev' and (release / 'product-media.compose.yaml').is_file():
-        args.extend(['--file', release / 'product-media.compose.yaml'])
+    if environment != 'dev':
+        for name in ('product-media.compose.yaml', 'analytics.compose.yaml'):
+            overlay = release / name
+            if overlay.is_file():
+                args.extend(['--file', overlay])
     return args
 
 
@@ -2530,8 +2549,7 @@ def main():
         elif args.command == 'setup-storage':
             setup_storage(config, args.environment)
         elif args.command == 'setup-analytics':
-            require(args.environment == 'dev', 'Use setup-analytics --environment dev; Production stays unchanged.')
-            setup_analytics(config)
+            setup_analytics(config, args.environment or 'dev')
         elif args.command == 'setup-bale':
             require(args.environment == 'dev', 'Use setup-bale --environment dev.')
             setup_bale(config)

@@ -13,7 +13,8 @@ PUBLIC_DASHBOARD_URL=https://dashboard.example.com
 APP_ORIGINS=https://example.com,https://app.example.com,https://dashboard.example.com
 TRUSTED_PROXIES=127.0.0.1/32
 LOG_LEVEL=info
-# Production remains disabled; never use the Development stream here.
+# Starts disabled. Configure a dedicated Production GA4 stream with mushroom setup-analytics.
+# Never reuse the Development stream in Production.
 PUBLIC_GA4_MEASUREMENT_ID=
 PUBLIC_ANALYTICS_CONSENT=denied
 PUBLIC_ANALYTICS_DEBUG=false

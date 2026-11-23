@@ -195,7 +195,7 @@ sudo mushroom
 | `9` | خلاصهٔ اتصال GitHub | `sudo mushroom github` |
 | `10` | اعمال دوبارهٔ پروکسی/TLS | بازتولید `mushroom.caddy` و reload کدی |
 | `11` | ادامهٔ نصب | `sudo mushroom install` |
-| `12` | تنظیم آنالیتیکس Dev | `sudo mushroom setup-analytics --environment dev` |
+| `12` | تنظیم GA4 محیط انتخاب‌شده | `sudo mushroom setup-analytics --environment <env>` |
 | `13` | تنظیم ورود مینی‌اپ بله Dev | `sudo mushroom setup-bale --environment dev` |
 | `14` | ثبت Webhook بله پس از استقرار | `sudo mushroom register-bale-webhook --environment dev` |
 | `q` | خروج | — |
@@ -233,24 +233,25 @@ sudo mushroom restore --environment production --archive /var/backups/mushroom/p
 ذخیره‌سازی و دریافت مخفی کلیدهای آن هم در همین فرمان است. پس از تغییر runtime، workflow همان محیط را
 اجرا کنید تا کانتینرها تنظیم تازه را بگیرند.
 
-## تنظیم امن GA4 در Dev
+## تنظیم امن GA4 برای هر محیط
 
-پس از نصب نسخهٔ به‌روز نصاب، `sudo mushroom setup-analytics --environment dev` را اجرا کنید
-یا گزینهٔ «Configure dev analytics» پنل را انتخاب کنید. حالت `disabled`، فقط `browser` یا
-`server` را انتخاب کنید؛ شناسهٔ استریم Dev فعلی `G-KXRZ89EFTY` است. حالت‌های فعال فقط برای
-جمع‌آوری مجاز در Dev هستند. DebugView به‌صورت یک انتخاب مستقل پرسیده می‌شود.
+پس از نصب نسخهٔ به‌روز نصاب، محیط آماده را انتخاب کنید؛ مثلاً
+`sudo mushroom setup-analytics --environment production` یا گزینهٔ ۱۲ پنل. برای هر محیط
+جداگانه `disabled`، `browser` یا `server` را انتخاب کنید. Measurement ID و API Secret باید
+متعلق به همان محیط باشند؛ استریم Dev را برای Production استفاده نکنید. DebugView هم جداگانه
+پرسیده می‌شود و به‌صورت پیش‌فرض خاموش است.
 
 در حالت `server`، API Secret همان استریم از ورودی مخفی دریافت می‌شود و در فایل
-`<DEV_ROOT>/secrets/ga4_api_secret` با دسترسی `0600` و مالک محیط Dev ذخیره می‌شود.
+`<ENV_ROOT>/secrets/ga4_api_secret` با دسترسی خصوصی ذخیره می‌شود.
 Secret در `runtime.env`، وضعیت نصاب، آرگومان فرمان، Git یا خروجی نوشته نمی‌شود.
 Secret موجود بدون انتخاب صریح جایگزین نمی‌شود؛ غیرفعال‌کردن آنالیتیکس فایل را حذف نمی‌کند.
-این فرمان برای Production یا سایر محیط‌ها پذیرفته نمی‌شود.
 
-پس از Merge این تغییر و نصب نصاب جدید، تنظیمات را ذخیره و workflow همگام‌سازی Dev را
-دوباره اجرا کنید؛ تغییر تنظیمات یا Secret باعث بازسازی runtime مربوط می‌شود. صرفاً
-`restart` تنظیمات Compose جدید را وارد کانتینر موجود نمی‌کند. سپس دریافت واقعی رویدادهای
-مرورگر و بک‌اند را طبق `config/ANALYTICS-ACCEPTANCE.md` بررسی کنید. موفقیت نصاب به معنی
-تأیید دریافت در GA4 نیست؛ Production به‌صورت پیش‌فرض خاموش می‌ماند.
+در حالت `server`، هر انتشار یک کپی خصوصی مخصوص همان نسخه می‌سازد تا rollback هم Secret
+همان نسخه را داشته باشد. در حالت `browser` فقط Measurement ID عمومی منتشر می‌شود.
+پس از ذخیره، workflow انتشار همان محیط را دوباره اجرا کنید؛ برای Production از workflow
+انتشار Production استفاده کنید. صرفاً `restart` تنظیمات Compose جدید را وارد کانتینر موجود
+نمی‌کند. دریافت واقعی رویدادها را در property همان محیط بررسی کنید؛ موفقیت نصاب به‌تنهایی
+دریافت در GA4 را ثابت نمی‌کند.
 
 ## فعال‌سازی امن Bale Mini App در محیط Dev
 

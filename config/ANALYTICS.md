@@ -1,9 +1,9 @@
 # Analytics — browser and confirmed conversions
 
 AN01 and AN02 deliver the browser foundation, attribution and request-level UX events.
-AN03 adds confirmed server conversions/Outbox; AN04 still owns end-to-end acceptance.
-This is not yet the completed analytics feature. Do not enable production
-analytics until those gates and the collection/consent policy are accepted.
+AN03 adds confirmed server conversions/Outbox. GA4 can be configured independently for
+each prepared environment, including Production; every environment remains disabled by
+default and needs its own Measurement ID and, for server delivery, private API Secret.
 
 ## Runtime configuration
 
@@ -143,9 +143,10 @@ timeout or crash after Google's acceptance can still repeat an event. Do not ass
 refund/custom-event processing. HTTP 2xx means submission, not proof of GA4 ingestion.
 Logs contain classification/attempt counts, never payloads, browser IDs or secret-bearing URLs.
 Consent is a captured snapshot; changing a local preference does not revoke already queued
-server context. The visitor consent/revocation policy must be resolved in AN04 before activation.
+server context. The visitor consent/revocation policy remains an operator responsibility.
+The runtime setting is a technical collection gate and does not display a consent prompt.
 
-## Server opt-in (not enabled by this implementation)
+## Server-side delivery opt-in
 
 The API additionally requires `ANALYTICS_SERVER_ENABLED=true`,
 `PUBLIC_ANALYTICS_CONSENT=granted`, the same `PUBLIC_GA4_MEASUREMENT_ID` as the browser,
@@ -153,18 +154,15 @@ and private `GA4_API_SECRET`. Enabled startup rejects missing property/secret.
 Keep the API secret in a private file, never frontend runtime config or source control.
 Docker API entrypoint supports `GA4_API_SECRET_FILE`.
 
-Production uses the explicit `deploy/vps/compose.analytics.yaml` overlay alongside
-`compose.yaml`, with `GA4_API_SECRET_PATH` pointing to that private file. The normal
-compose file leaves server analytics disabled. The overlay adds no service and mounts
-the secret only into the API. In VPS dev, the optional-secret directory can supply
-`ga4_api_secret`; the dev API launcher reads it only when server analytics is enabled.
-No real credentials/property activation or deployment has been performed.
+Release deployments generate a private, release-scoped Compose overlay when
+`ANALYTICS_SERVER_ENABLED=true`. The secret is copied from that environment's
+`secrets/ga4_api_secret`, mounted only into the API, and retained with the release for
+rollback. Frontends receive only the public Measurement ID and runtime consent/debug
+flags. In VPS dev, the optional-secret directory supplies `ga4_api_secret`.
 
-AN04 must validate real GA4 receipt, domain/session continuity, custom definitions,
-collection/consent policy and the complete authenticated product journey before production use.
-Follow [the AN04 acceptance checklist](ANALYTICS-ACCEPTANCE.md) for the concrete operator
-steps, local test coverage and outstanding live evidence. Local software checks do not
-enable collection or certify the target property.
+Use [the AN04 acceptance checklist](ANALYTICS-ACCEPTANCE.md) to validate real GA4 receipt,
+domain/session continuity, custom definitions and the complete product journey. A successful
+configuration or deployment does not certify ingestion by the target property.
 
 Server protocol sources:
 - https://developers.google.com/analytics/devguides/collection/protocol/ga4/reference

@@ -1,14 +1,14 @@
 # Analytics acceptance and GA4 setup — AN04
 
 Status: AN04 software acceptance is separated from AN05 post-merge Dev acceptance by
-explicit owner instruction. Local checks and real browser-property receipt are recorded
-in the Phase12 log; actual server/domain acceptance remains pending. Production is off.
+explicit owner instruction. Production GA4 is configurable per environment but remains
+off until an operator supplies a dedicated Production property and enables it.
 Confirmed Development target (owner supplied and verified in the Google Analytics UI):
 
 - Stream: **Mushroom - Dev Web**; Stream ID `16282576410`.
 - Web URL: `https://dev.drshirmardi.com`; Measurement ID **`G-KXRZ89EFTY`**.
 - Enhanced Measurement switch: OFF (observed, not changed).
-- API secret file: not yet prepared, per owner. Server delivery remains disabled.
+- API Secret presence and live receipt are server-local facts; this note records the stream identity, not the current server state.
 
 The explicit public Dev acceptance profile is
 [`deploy/vps/analytics.dev.env.example`](../deploy/vps/analytics.dev.env.example).
@@ -16,13 +16,13 @@ Merge it only into the existing Dev runtime configuration; it is not loaded auto
 and is never a Production default. Its browser consent opt-in covers controlled Dev testing;
 visitor collection/withdrawal policy remains a separate release gate.
 
-The current installer provides `sudo mushroom setup-analytics --environment dev` (also
-available in its panel). Choose browser/server/disabled, enter the public Measurement ID,
-select DebugView and enter the private secret through hidden input when server mode is
-selected. It preserves unrelated settings and existing credentials unless replacement is
-explicitly selected. After updating the installer from the approved bundle and configuring
-the target, rerun the shared Dev synchronization workflow to apply runtime changes;
-restart alone does not recreate the Compose environment. See installation/README.md.
+The installer provides `sudo mushroom setup-analytics --environment <env>` (also available
+from the panel after choosing an environment). Choose browser/server/disabled, enter that
+environment's Measurement ID, select DebugView and enter the private secret through hidden
+input when server mode is selected. It preserves unrelated settings and existing credentials
+unless replacement is explicitly selected. Rerun that environment's deployment workflow to
+apply runtime changes; restart alone does not recreate the Compose environment. See
+installation/README.md.
 
 ```mermaid
 flowchart TD
