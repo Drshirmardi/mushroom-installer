@@ -972,6 +972,8 @@ def configure_proxy(config, directory=None):
     for environment, spec in config['environments'].items():
         root = Path(spec['home']) / 'mushroom' / environment
         settings = load_env(root / 'runtime.env') if (root / 'runtime.env').exists() else {}
+        sse_paths = '^/v1/chat/(conversations/[^/]+/events|calls/(incoming|outgoing)/events)$'
+        api_port = spec.get('basePort', PORTS[environment]) + 3
         internal_chat_rule = ''
         if (root / 'communications.compose.yaml').is_file():
             internal_chat_rule = '  respond /v1/chat/internal/* 404\n'
@@ -987,9 +989,13 @@ def configure_proxy(config, directory=None):
             if service == 'api' and (root / 'state/database-maintenance').is_file():
                 sites.append(f'{domain} {{\n  tls {config["email"]}\n  respond "Database recovery in progress" 503\n}}\n')
             else:
-                encoding = '  encode zstd gzip\n'
+                encoding = (f'  @compress_api not path_regexp chat_sse_compression {sse_paths}\n  encode @compress_api zstd gzip\n'
+                            if service == 'api' else '  encode zstd gzip\n')
                 internal_rule = internal_chat_rule if service == 'api' else ''
-                sites.append(f'{domain} {{\n  tls {config["email"]}\n{encoding}{internal_rule}  reverse_proxy 127.0.0.1:{spec.get("basePort", PORTS[environment]) + offset}\n}}\n')
+                sse_proxy = (f'  @chat_sse path_regexp chat_sse {sse_paths}\n'
+                             f'  reverse_proxy @chat_sse 127.0.0.1:{api_port} {{\n    flush_interval -1\n  }}\n'
+                             if service == 'api' else '')
+                sites.append(f'{domain} {{\n  tls {config["email"]}\n{encoding}{sse_proxy}{internal_rule}  reverse_proxy 127.0.0.1:{spec.get("basePort", PORTS[environment]) + offset}\n}}\n')
     site_content = '\n'.join(sites)
     new_main = existing if imported else marker + '\n' + import_line + '\n'
     # Validate the proposed complete config before changing either live file.
